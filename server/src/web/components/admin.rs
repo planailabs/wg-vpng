@@ -77,6 +77,8 @@ fn UserCard(
     })?;
     let mut new_device = use_signal(String::new);
     let mut new_address = use_signal(String::new);
+    let mut gen_key = use_signal(|| false);
+    let mut created_config = use_signal(|| Option::<String>::None);
     let mut sel_iface = use_signal(|| ifaces.first().map(|(id, _)| id.to_string()).unwrap_or_default());
 
     rsx! {
@@ -142,21 +144,34 @@ fn UserCard(
                             value: "{new_device}", oninput: move |e| new_device.set(e.value()) }
                         input { class: "input w-56 text-sm font-mono", placeholder: t!("users-new-device-subnet-placeholder"),
                             value: "{new_address}", oninput: move |e| new_address.set(e.value()) }
+                        label { class: "flex items-center gap-1 text-xs text-fg-muted",
+                            input { r#type: "checkbox", checked: gen_key(), onchange: move |e| gen_key.set(e.value() == "true") }
+                            {t!("admin-generate-key")}
+                        }
                         Button {
                             variant: ButtonVariant::Primary,
                             onclick: move |_| {
-                                let (name, addr) = (new_device(), new_address());
+                                let (name, addr, g) = (new_device(), new_address(), gen_key());
                                 let iid = sel_iface();
                                 async move {
                                     let Ok(iid) = Uuid::parse_str(&iid) else { on_error.call("select an interface".into()); return; };
-                                    match admin_create_device(iid, uid, name, addr).await {
-                                        Ok(_) => { new_device.set(String::new()); new_address.set(String::new()); local += 1; on_change.call(()); }
+                                    match admin_create_device(iid, uid, name, addr, g).await {
+                                        Ok(v) => {
+                                            new_device.set(String::new());
+                                            new_address.set(String::new());
+                                            if let Some(nd) = v { created_config.set(Some(nd.config)); }
+                                            local += 1;
+                                            on_change.call(());
+                                        }
                                         Err(e) => on_error.call(e.to_string()),
                                     }
                                 }
                             },
                             {t!("action-add-device")}
                         }
+                    }
+                    if let Some(c) = created_config() {
+                        pre { class: "text-xs bg-surface-2 rounded-md p-2 mb-2 overflow-x-auto whitespace-pre", "{c}" }
                     }
                 }
 
@@ -167,6 +182,9 @@ fn UserCard(
                             for d in list.clone() {
                                 div { key: "{d.id}", class: "flex items-center gap-2 text-sm",
                                     span { class: "flex-1 min-w-0 truncate text-fg", "{d.interface_name} · {d.name} · {d.address}" }
+                                    if !d.configured {
+                                        Badge { variant: BadgeVariant::Warn, {t!("badge-unconfigured")} }
+                                    }
                                     DeviceButtons { id: d.id, on_change: move |_| { local += 1; on_change.call(()); }, on_error }
                                 }
                             }

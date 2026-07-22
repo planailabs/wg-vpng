@@ -53,6 +53,9 @@ users-loading-devices = Loading devices…
 
 ## ── Devices / interfaces (multi-interface) ──────────────────────
 devices-no-interfaces = No interfaces are available to you yet.
+device-unconfigured-note = Not configured — generate a key to activate.
+badge-unconfigured = unconfigured
+admin-generate-key = Generate key now
 devices-quota-unlimited = { $used } devices
 users-device-count-simple = { $count } devices
 action-create = Create

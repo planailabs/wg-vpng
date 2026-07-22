@@ -151,6 +151,7 @@ fn InterfaceSection(
                         id: peer.id,
                         name: peer.name.clone(),
                         address: peer.address.clone(),
+                        configured: peer.configured,
                         on_change: move |_| on_change.call(()),
                         on_show: move |c: (Uuid, String)| on_show.call(c),
                         on_error: move |e: String| on_error.call(e),
@@ -166,6 +167,7 @@ fn DeviceRow(
     id: Uuid,
     name: String,
     address: String,
+    configured: bool,
     on_change: EventHandler<()>,
     on_show: EventHandler<(Uuid, String)>,
     on_error: EventHandler<String>,
@@ -175,27 +177,45 @@ fn DeviceRow(
         div { class: "flex items-center gap-3 border-t border-line-soft pt-2 first:border-0 first:pt-0",
             div { class: "flex-1 min-w-0",
                 div { class: "text-fg-strong text-sm", "{display_name}" }
-                div { class: "text-fg-muted text-xs font-mono", "{address}" }
+                if configured {
+                    div { class: "text-fg-muted text-xs font-mono", "{address}" }
+                } else {
+                    div { class: "text-warn text-xs", {t!("device-unconfigured-note")} }
+                }
             }
-            Button {
-                variant: ButtonVariant::Secondary,
-                onclick: move |_| async move {
-                    match peer_config_text(id).await {
-                        Ok(cfg) => on_show.call((id, cfg)),
-                        Err(e) => on_error.call(e.to_string()),
-                    }
-                },
-                {t!("action-show-config")}
-            }
-            Button {
-                variant: ButtonVariant::Secondary,
-                onclick: move |_| async move {
-                    match regenerate_peer(id).await {
-                        Ok(v) => { on_show.call((id, v.config)); on_change.call(()); }
-                        Err(e) => on_error.call(e.to_string()),
-                    }
-                },
-                {t!("action-regenerate")}
+            if !configured {
+                // Unconfigured: the user generates the key here.
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: move |_| async move {
+                        match regenerate_peer(id).await {
+                            Ok(v) => { on_show.call((id, v.config)); on_change.call(()); }
+                            Err(e) => on_error.call(e.to_string()),
+                        }
+                    },
+                    {t!("action-generate")}
+                }
+            } else {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| async move {
+                        match peer_config_text(id).await {
+                            Ok(cfg) => on_show.call((id, cfg)),
+                            Err(e) => on_error.call(e.to_string()),
+                        }
+                    },
+                    {t!("action-show-config")}
+                }
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| async move {
+                        match regenerate_peer(id).await {
+                            Ok(v) => { on_show.call((id, v.config)); on_change.call(()); }
+                            Err(e) => on_error.call(e.to_string()),
+                        }
+                    },
+                    {t!("action-regenerate")}
+                }
             }
             Button {
                 variant: ButtonVariant::Danger,

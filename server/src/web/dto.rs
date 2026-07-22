@@ -20,6 +20,8 @@ pub struct PeerView {
     pub address: String,
     pub public_key: String,
     pub owner_email: Option<String>,
+    /// False for an "unconfigured" device (no key yet — the user must generate).
+    pub configured: bool,
 }
 
 /// A freshly created/regenerated device plus its full config (with the private

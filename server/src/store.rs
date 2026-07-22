@@ -341,6 +341,39 @@ pub async fn create_peer_with_address(
     insert_peer(pool, interface_id, user_id, name, &address).await
 }
 
+/// Create an *unconfigured* device (admin): no key is generated, so the user
+/// generates it themselves later (via regenerate). `public_key` stays empty
+/// until then. Allocates an address (or uses `address_spec`).
+pub async fn create_peer_unconfigured(
+    pool: &PgPool,
+    interface_id: Uuid,
+    user_id: Option<Uuid>,
+    name: &str,
+    address_spec: Option<&str>,
+) -> Result<Peer> {
+    let address = match address_spec {
+        Some(s) => wg::validate_address_spec(s).map_err(anyhow::Error::msg)?,
+        None => {
+            let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
+            let subnets = wg::parse_subnets(&iface.address).map_err(anyhow::Error::msg)?;
+            let taken: Vec<String> =
+                list_peers(pool, interface_id).await?.into_iter().map(|p| p.address).collect();
+            wg::allocate_addresses(&subnets, &taken).map_err(anyhow::Error::msg)?
+        }
+    };
+    sqlx::query_as::<_, Peer>(&format!(
+        "INSERT INTO wg_peers (interface_id, user_id, name, public_key, preshared_key, address) \
+         VALUES ($1,$2,$3,'',NULL,$4) RETURNING {PEER_COLS}"
+    ))
+    .bind(interface_id)
+    .bind(user_id)
+    .bind(name)
+    .bind(&address)
+    .fetch_one(pool)
+    .await
+    .context("insert unconfigured peer")
+}
+
 /// Insert a peer, storing only its PUBLIC key + PSK. Returns `(peer,
 /// private_key)`; the private key is generated here and never persisted.
 async fn insert_peer(
@@ -488,6 +521,10 @@ pub async fn list_active_peers(pool: &PgPool, interface_id: Uuid) -> Result<Vec<
     let peers = list_peers(pool, interface_id).await?;
     let mut out = Vec::with_capacity(peers.len());
     for p in peers {
+        // Unconfigured devices (no key yet) can't be applied.
+        if p.public_key.is_empty() {
+            continue;
+        }
         match p.user_id {
             None => out.push(p),
             Some(uid) => {
@@ -728,5 +765,31 @@ mod tests {
 
         // interfaces_for_user sees both (both are `*`).
         assert_eq!(interfaces_for_user(&pool, "u@x").await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn unconfigured_device_activates_on_regenerate() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let iface = mk_iface(&pool, &["*".into()], "10.8.0.1/24").await;
+        let u: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
+
+        // Two unconfigured devices coexist (empty public keys don't collide).
+        let d1 = create_peer_unconfigured(&pool, iface.id, Some(u), "a", None).await.unwrap();
+        let _d2 = create_peer_unconfigured(&pool, iface.id, Some(u), "b", None).await.unwrap();
+        assert!(d1.public_key.is_empty());
+        assert_eq!(count_user_devices_on_interface(&pool, iface.id, u).await.unwrap(), 2);
+        // Neither is active yet (no key).
+        assert!(list_active_peers(&pool, iface.id).await.unwrap().is_empty());
+
+        // The user generates a key -> device becomes configured + active.
+        let (d1b, privkey) = regenerate_peer(&pool, d1.id).await.unwrap();
+        assert!(!d1b.public_key.is_empty());
+        assert_eq!(d1b.address, d1.address);
+        assert_eq!(privkey.len(), 44);
+        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 1);
     }
 }

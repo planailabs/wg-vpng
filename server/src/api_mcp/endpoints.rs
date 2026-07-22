@@ -351,6 +351,14 @@ pub struct PeerCreateInput {
     /// whole routed subnet (e.g. an IPv6 `/64`). Omit to auto-allocate.
     #[serde(default)]
     pub address: Option<String>,
+    /// When false, create an *unconfigured* device (no key) so the user
+    /// generates it themselves. Defaults to true.
+    #[serde(default = "default_true")]
+    pub generate_key: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A created/regenerated peer, including the private key + rendered config —
@@ -363,9 +371,11 @@ pub struct CreatedPeer {
     pub name: String,
     pub public_key: String,
     pub address: String,
-    /// Shown once; never stored server-side.
+    /// Shown once; never stored server-side. Empty for an unconfigured device.
     pub private_key: String,
     pub config: String,
+    /// False for an unconfigured device (no key yet).
+    pub configured: bool,
 }
 
 fn created_peer(peer: &store::Peer, private_key: String, iface: &store::Interface) -> CreatedPeer {
@@ -378,6 +388,7 @@ fn created_peer(peer: &store::Peer, private_key: String, iface: &store::Interfac
         address: peer.address.clone(),
         config: store::render_peer_config(iface, peer, &private_key),
         private_key,
+        configured: true,
     }
 }
 
@@ -393,8 +404,27 @@ pub async fn peer_create(
         None => None,
     };
     let name = i.name.unwrap_or_default();
-    let (peer, private_key) = match i.address.as_deref().filter(|a| !a.is_empty()) {
-        Some(addr) => store::create_peer_with_address(&pool, iface.id, user_id, &name, addr).await,
+    let addr = i.address.as_deref().filter(|a| !a.is_empty());
+
+    if !i.generate_key {
+        let peer = store::create_peer_unconfigured(&pool, iface.id, user_id, &name, addr)
+            .await
+            .map_err(internal)?;
+        return Ok(CreatedPeer {
+            id: peer.id,
+            interface_id: peer.interface_id,
+            user_id: peer.user_id,
+            name: peer.name,
+            public_key: String::new(),
+            address: peer.address,
+            private_key: String::new(),
+            config: String::new(),
+            configured: false,
+        });
+    }
+
+    let (peer, private_key) = match addr {
+        Some(a) => store::create_peer_with_address(&pool, iface.id, user_id, &name, a).await,
         None => store::create_peer(&pool, iface.id, user_id, &name).await,
     }
     .map_err(internal)?;

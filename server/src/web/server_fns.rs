@@ -250,20 +250,32 @@ pub async fn admin_user_devices(user_id: Uuid) -> Result<Vec<PeerView>, ServerFn
 /// Admin creates a device for a user on an interface (bypasses limit + ACL; the
 /// device just stays inactive until the user matches the interface patterns).
 /// Optional `address` assigns an explicit CIDR/subnet.
+/// Admin creates a device for a user. When `generate_key` is false the device
+/// is left *unconfigured* (no key) so the user generates it themselves — this
+/// returns `None`. When true it generates the key and returns the config once.
 #[server]
 pub async fn admin_create_device(
     interface_id: Uuid,
     user_id: Uuid,
     name: String,
     address: String,
-) -> Result<NewDeviceView, ServerFnError> {
+    generate_key: bool,
+) -> Result<Option<NewDeviceView>, ServerFnError> {
     let pool = crate::server_state::pool()?;
     require_admin(&pool).await?;
     let addr = address.trim();
-    let (peer, private_key) = if addr.is_empty() {
-        crate::store::create_peer(&pool, interface_id, Some(user_id), &name).await
-    } else {
-        crate::store::create_peer_with_address(&pool, interface_id, Some(user_id), &name, addr).await
+    let addr_opt = if addr.is_empty() { None } else { Some(addr) };
+
+    if !generate_key {
+        crate::store::create_peer_unconfigured(&pool, interface_id, Some(user_id), &name, addr_opt)
+            .await
+            .map_err(err)?;
+        return Ok(None);
+    }
+
+    let (peer, private_key) = match addr_opt {
+        Some(a) => crate::store::create_peer_with_address(&pool, interface_id, Some(user_id), &name, a).await,
+        None => crate::store::create_peer(&pool, interface_id, Some(user_id), &name).await,
     }
     .map_err(err)?;
     sync(&pool, interface_id).await?;
@@ -272,7 +284,7 @@ pub async fn admin_create_device(
         .map_err(err)?
         .ok_or_else(|| ServerFnError::new("interface not found"))?;
     let config = crate::store::render_peer_config(&iface, &peer, &private_key);
-    Ok(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config })
+    Ok(Some(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config }))
 }
 
 #[server]
@@ -382,6 +394,7 @@ async fn peer_view(
         .await
         .map_err(err)?
         .unwrap_or_default();
+    let configured = !p.public_key.is_empty();
     Ok(PeerView {
         id: p.id,
         interface_id: p.interface_id,
@@ -390,6 +403,7 @@ async fn peer_view(
         address: p.address,
         public_key: p.public_key,
         owner_email,
+        configured,
     })
 }
 
