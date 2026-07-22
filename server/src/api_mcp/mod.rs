@@ -38,6 +38,10 @@ fn build_registry(pool: PgPool) -> Registry<PgPool> {
         r.get("Get an interface (default interface when id omitted).", |pool, p, i: InterfaceGetInput| async move {
             interface_get(pool, p, i).await
         });
+        r.update(
+            "Update an interface's client-facing settings (endpoint, DNS, routed networks, keepalive).",
+            |pool, p, i: InterfaceUpdateInput| async move { interface_update(pool, p, i).await },
+        );
         r.custom(
             "status",
             Risk::ReadOnly,
@@ -54,6 +58,9 @@ fn build_registry(pool: PgPool) -> Registry<PgPool> {
         });
         r.get("Get a peer.", |pool, p, i: PeerGetInput| async move {
             peer_get(pool, p, i).await
+        });
+        r.update("Rename a device (peer).", |pool, p, i: PeerUpdateInput| async move {
+            peer_update(pool, p, i).await
         });
         r.create(
             "Create a peer (generates a keypair, allocates an address, syncs the backend).",
@@ -82,6 +89,12 @@ fn build_registry(pool: PgPool) -> Registry<PgPool> {
         let mut r = reg.resource("users", "user", "Users");
         r.list("List users with device counts (admin).", |pool, p, i: UserListInput| async move {
             user_list(pool, p, i).await
+        });
+        r.get("Get a user with device count (admin).", |pool, p, i: UserIdInput| async move {
+            user_get(pool, p, i).await
+        });
+        r.create("Create (or upsert) a user by email (admin).", |pool, p, i: UserCreateInput| async move {
+            user_create(pool, p, i).await
         });
         r.custom(
             "ban",

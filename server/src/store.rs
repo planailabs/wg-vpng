@@ -112,6 +112,45 @@ pub async fn get_interface_by_name(pool: &PgPool, name: &str) -> Result<Option<I
     .await?)
 }
 
+/// Update an interface's client-facing settings (endpoint, DNS, routed
+/// networks, keepalive). Keys/address/port are immutable here so existing
+/// peers keep working.
+pub async fn update_interface(
+    pool: &PgPool,
+    id: Uuid,
+    endpoint: Option<&str>,
+    dns: Option<Option<&str>>,
+    allowed_ips: Option<&str>,
+    keepalive: Option<i32>,
+) -> Result<Interface> {
+    let mut iface = get_interface(pool, id).await?.context("interface not found")?;
+    if let Some(e) = endpoint {
+        iface.endpoint = e.to_string();
+    }
+    if let Some(d) = dns {
+        iface.dns = d.map(|s| s.to_string());
+    }
+    if let Some(a) = allowed_ips {
+        iface.allowed_ips = a.to_string();
+    }
+    if let Some(k) = keepalive {
+        iface.keepalive = k;
+    }
+    let updated = sqlx::query_as::<_, Interface>(&format!(
+        "UPDATE wg_interfaces SET endpoint=$2, dns=$3, allowed_ips=$4, keepalive=$5 \
+         WHERE id=$1 RETURNING {IFACE_COLS}"
+    ))
+    .bind(id)
+    .bind(&iface.endpoint)
+    .bind(&iface.dns)
+    .bind(&iface.allowed_ips)
+    .bind(iface.keepalive)
+    .fetch_one(pool)
+    .await
+    .context("update interface")?;
+    Ok(updated)
+}
+
 // ── Peers ─────────────────────────────────────────────────────────────
 
 pub async fn list_peers(pool: &PgPool, interface_id: Uuid) -> Result<Vec<Peer>> {
@@ -200,12 +239,36 @@ pub async fn regenerate_peer(pool: &PgPool, peer_id: Uuid) -> Result<Peer> {
     Ok(peer)
 }
 
+/// Rename a peer (device). Cosmetic — no backend change needed.
+pub async fn rename_peer(pool: &PgPool, peer_id: Uuid, name: &str) -> Result<Peer> {
+    Ok(sqlx::query_as::<_, Peer>(&format!(
+        "UPDATE wg_peers SET name=$2 WHERE id=$1 RETURNING {PEER_COLS}"
+    ))
+    .bind(peer_id)
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .context("rename peer")?)
+}
+
 pub async fn delete_peer(pool: &PgPool, peer_id: Uuid) -> Result<()> {
     sqlx::query("DELETE FROM wg_peers WHERE id = $1")
         .bind(peer_id)
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Upsert a user by email, returning its id.
+pub async fn upsert_user_by_email(pool: &PgPool, email: &str) -> Result<Uuid> {
+    Ok(sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO users (email) VALUES ($1) \
+         ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email RETURNING id",
+    )
+    .bind(email)
+    .fetch_one(pool)
+    .await
+    .context("upsert user")?)
 }
 
 // ── Users / devices ───────────────────────────────────────────────────

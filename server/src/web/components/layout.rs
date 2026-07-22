@@ -4,6 +4,7 @@
 //! focused content column rather than a wide dashboard sprawl.
 
 use dioxus::prelude::*;
+use dioxus_i18n::t;
 use plan_ai_design::{LanguagePicker, ThemeToggle};
 
 use crate::web::app::Route;
@@ -37,17 +38,17 @@ pub fn Layout() -> Element {
                             "wg"
                         }
                         div { class: "leading-tight hidden sm:block",
-                            div { class: "font-semibold text-fg-strong text-sm", "WireGuard VPN" }
-                            div { class: "text-fg-faint text-[11px] tracking-wide uppercase", "Generator" }
+                            div { class: "font-semibold text-fg-strong text-sm", {t!("brand-title")} }
+                            div { class: "text-fg-faint text-[11px] tracking-wide uppercase", {t!("brand-subtitle")} }
                         }
                     }
 
                     // Primary navigation (tabs)
                     nav { class: "flex items-stretch gap-1 h-full",
-                        NavTab { to: Route::MyConfig {}, label: "My devices" }
+                        NavTab { to: Route::MyConfig {}, label: t!("nav-devices") }
                         if is_admin {
-                            NavTab { to: Route::Interfaces {}, label: "Interface" }
-                            NavTab { to: Route::Admin {}, label: "Users" }
+                            NavTab { to: Route::Interfaces {}, label: t!("nav-interface") }
+                            NavTab { to: Route::Admin {}, label: t!("nav-users") }
                         }
                     }
 
@@ -70,8 +71,8 @@ pub fn Layout() -> Element {
                         a {
                             class: "text-sm text-fg-muted hover:text-danger px-2 py-1 rounded-md transition-colors",
                             href: "/auth/logout",
-                            title: "Sign out",
-                            "Sign out"
+                            title: t!("action-sign-out"),
+                            {t!("action-sign-out")}
                         }
                     }
                 }
@@ -82,7 +83,7 @@ pub fn Layout() -> Element {
                 div { class: "max-w-5xl mx-auto px-6 py-10 w-full",
                     SuspenseBoundary {
                         fallback: |_| rsx! {
-                            div { class: "flex items-center justify-center py-24 text-fg-muted text-sm", "Loading…" }
+                            div { class: "flex items-center justify-center py-24 text-fg-muted text-sm", {t!("common-loading")} }
                         },
                         Outlet::<Route> {}
                     }
@@ -93,7 +94,7 @@ pub fn Layout() -> Element {
 }
 
 #[component]
-fn NavTab(to: Route, label: &'static str) -> Element {
+fn NavTab(to: Route, label: String) -> Element {
     rsx! {
         Link {
             to,

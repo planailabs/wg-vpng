@@ -2,6 +2,7 @@
 //! user) plus access control — set device limits, revoke access, ban, delete.
 
 use dioxus::prelude::*;
+use dioxus_i18n::t;
 use plan_ai_design::{Alert, AlertVariant, Badge, BadgeVariant, Button, ButtonVariant, Card};
 use uuid::Uuid;
 
@@ -23,10 +24,8 @@ pub fn Admin() -> Element {
 
     rsx! {
         div { class: "mb-8",
-            h2 { class: "text-2xl font-semibold text-fg-strong tracking-tight", "Users" }
-            p { class: "text-fg-muted text-sm mt-1",
-                "Manage each user's devices and access. Revoking drops a user's devices from the VPN; banning also blocks login; deleting removes the user and all their devices."
-            }
+            h2 { class: "text-2xl font-semibold text-fg-strong tracking-tight", {t!("users-title")} }
+            p { class: "text-fg-muted text-sm mt-1", {t!("users-subtitle")} }
         }
 
         if let Some(e) = error() {
@@ -34,7 +33,7 @@ pub fn Admin() -> Element {
         }
 
         match &*users.read() {
-            Some(Ok(list)) if list.is_empty() => rsx! { p { class: "text-fg-muted text-sm", "No users yet." } },
+            Some(Ok(list)) if list.is_empty() => rsx! { p { class: "text-fg-muted text-sm", {t!("users-empty")} } },
             Some(Ok(list)) => rsx! {
                 div { class: "flex flex-col gap-4",
                     for user in list.clone() {
@@ -48,7 +47,7 @@ pub fn Admin() -> Element {
                 }
             },
             Some(Err(e)) => rsx! { Alert { variant: AlertVariant::Danger, "{e}" } },
-            None => rsx! { p { class: "text-fg-muted", "Loading…" } },
+            None => rsx! { p { class: "text-fg-muted", {t!("common-loading")} } },
         }
     }
 }
@@ -70,13 +69,13 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                 div { class: "flex-1 min-w-0",
                     div { class: "text-fg-strong font-medium", "{user.email}" }
                     div { class: "text-fg-muted text-xs",
-                        "{user.device_count} / {user.effective_limit} devices"
+                        {t!("users-device-count", count: user.device_count, limit: user.effective_limit)}
                         if !user.name.is_empty() { " · {user.name}" }
                     }
                 }
-                if user.is_admin { Badge { variant: BadgeVariant::Info, "admin" } }
-                if user.banned { Badge { variant: BadgeVariant::Warn, "banned" } }
-                if user.access_revoked { Badge { variant: BadgeVariant::Warn, "revoked" } }
+                if user.is_admin { Badge { variant: BadgeVariant::Info, {t!("badge-admin")} } }
+                if user.banned { Badge { variant: BadgeVariant::Warn, {t!("badge-banned")} } }
+                if user.access_revoked { Badge { variant: BadgeVariant::Warn, {t!("badge-revoked")} } }
             }
 
             // Access controls.
@@ -89,7 +88,7 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                             Err(e) => on_error.call(e.to_string()),
                         }
                     },
-                    if user.access_revoked { "Restore access" } else { "Revoke access" }
+                    { if user.access_revoked { t!("action-restore-access") } else { t!("action-revoke-access") } }
                 }
                 Button {
                     variant: ButtonVariant::Secondary,
@@ -99,7 +98,7 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                             Err(e) => on_error.call(e.to_string()),
                         }
                     },
-                    if user.banned { "Unban" } else { "Ban" }
+                    { if user.banned { t!("action-unban") } else { t!("action-ban") } }
                 }
                 Button {
                     variant: ButtonVariant::Danger,
@@ -109,14 +108,14 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                             Err(e) => on_error.call(e.to_string()),
                         }
                     },
-                    "Delete user"
+                    {t!("action-delete-user")}
                 }
                 div { class: "flex items-center gap-1 ml-auto",
-                    label { class: "text-fg-muted text-xs", "Limit" }
+                    label { class: "text-fg-muted text-xs", {t!("users-limit-label")} }
                     input {
                         class: "input w-16 text-sm",
                         r#type: "number",
-                        placeholder: "def",
+                        placeholder: t!("users-limit-placeholder"),
                         value: "{limit_input}",
                         oninput: move |e| limit_input.set(e.value()),
                     }
@@ -129,7 +128,7 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                                 Err(e) => on_error.call(e.to_string()),
                             }
                         },
-                        "Set"
+                        {t!("action-set")}
                     }
                 }
             }
@@ -139,7 +138,7 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                 div { class: "flex items-end gap-2 mb-2",
                     input {
                         class: "input flex-1 text-sm",
-                        placeholder: "new device name",
+                        placeholder: t!("users-new-device-placeholder"),
                         value: "{new_device}",
                         oninput: move |e| new_device.set(e.value()),
                     }
@@ -154,12 +153,12 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                                 }
                             }
                         },
-                        "Add device"
+                        {t!("action-add-device")}
                     }
                 }
 
                 match &*devices.read() {
-                    Some(Ok(list)) if list.is_empty() => rsx! { p { class: "text-fg-muted text-xs", "No devices." } },
+                    Some(Ok(list)) if list.is_empty() => rsx! { p { class: "text-fg-muted text-xs", {t!("users-no-devices")} } },
                     Some(Ok(list)) => rsx! {
                         div { class: "flex flex-col gap-1",
                             for d in list.clone() {
@@ -173,7 +172,7 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                         }
                     },
                     Some(Err(e)) => rsx! { Alert { variant: AlertVariant::Danger, "{e}" } },
-                    None => rsx! { p { class: "text-fg-muted text-xs", "Loading devices…" } },
+                    None => rsx! { p { class: "text-fg-muted text-xs", {t!("users-loading-devices")} } },
                 }
             }
         }
@@ -192,7 +191,7 @@ fn DeviceButtons(id: Uuid, on_change: EventHandler<()>, on_error: EventHandler<S
                     Err(e) => on_error.call(e.to_string()),
                 }
             },
-            "Config"
+            {t!("action-config")}
         }
         Button {
             variant: ButtonVariant::Secondary,
@@ -202,7 +201,7 @@ fn DeviceButtons(id: Uuid, on_change: EventHandler<()>, on_error: EventHandler<S
                     Err(e) => on_error.call(e.to_string()),
                 }
             },
-            "Regenerate"
+            {t!("action-regenerate")}
         }
         Button {
             variant: ButtonVariant::Danger,
@@ -212,7 +211,7 @@ fn DeviceButtons(id: Uuid, on_change: EventHandler<()>, on_error: EventHandler<S
                     Err(e) => on_error.call(e.to_string()),
                 }
             },
-            "Delete"
+            {t!("action-delete")}
         }
         if let Some(c) = config() {
             div { class: "w-full",

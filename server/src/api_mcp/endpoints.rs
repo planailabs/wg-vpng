@@ -63,6 +63,46 @@ pub async fn interface_get(
     resolve_interface(&pool, i.id).await
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InterfaceUpdateInput {
+    /// Interface id; omit to update the default (first) interface.
+    #[serde(default)]
+    pub id: Option<Uuid>,
+    /// Public host:port clients dial.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// DNS pushed to clients; empty string clears it.
+    #[serde(default)]
+    pub dns: Option<String>,
+    /// Networks routed through the tunnel (client AllowedIPs).
+    #[serde(default)]
+    pub allowed_ips: Option<String>,
+    /// PersistentKeepalive seconds.
+    #[serde(default)]
+    pub keepalive: Option<i32>,
+}
+
+pub async fn interface_update(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: InterfaceUpdateInput,
+) -> Result<store::Interface, ApiError> {
+    p.require_admin()?;
+    let iface = resolve_interface(&pool, i.id).await?;
+    // Empty dns string clears; absent leaves unchanged.
+    let dns = i.dns.as_ref().map(|s| if s.is_empty() { None } else { Some(s.as_str()) });
+    store::update_interface(
+        &pool,
+        iface.id,
+        i.endpoint.as_deref(),
+        dns,
+        i.allowed_ips.as_deref(),
+        i.keepalive,
+    )
+    .await
+    .map_err(internal)
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct StatusOutput {
     pub public_key: String,
@@ -154,6 +194,22 @@ pub async fn peer_create(
         .map_err(internal)?;
     sync(&pool, iface.id).await?;
     Ok(peer)
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PeerUpdateInput {
+    pub id: Uuid,
+    /// New device name.
+    pub name: String,
+}
+
+pub async fn peer_update(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: PeerUpdateInput,
+) -> Result<store::Peer, ApiError> {
+    p.require_admin()?;
+    store::rename_peer(&pool, i.id, &i.name).await.map_err(internal)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -271,9 +327,51 @@ pub async fn user_list(
         .collect())
 }
 
+async fn user_output(pool: &PgPool, id: Uuid) -> Result<UserOutput, ApiError> {
+    let user = crate::store::get_user(pool, id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| ApiError::not_found("user not found"))?;
+    let device_count = crate::store::count_user_devices(pool, id).await.map_err(internal)?;
+    Ok(UserOutput {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        is_admin: user.is_admin,
+        banned: user.banned,
+        access_revoked: user.access_revoked,
+        device_limit: user.device_limit,
+        device_count,
+    })
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UserIdInput {
     pub id: Uuid,
+}
+
+pub async fn user_get(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: UserIdInput,
+) -> Result<UserOutput, ApiError> {
+    p.require_admin()?;
+    user_output(&pool, i.id).await
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UserCreateInput {
+    pub email: String,
+}
+
+pub async fn user_create(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: UserCreateInput,
+) -> Result<UserOutput, ApiError> {
+    p.require_admin()?;
+    let id = crate::store::upsert_user_by_email(&pool, &i.email).await.map_err(internal)?;
+    user_output(&pool, id).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

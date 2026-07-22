@@ -23,9 +23,17 @@ pub enum Route {
 #[component]
 pub fn App() -> Element {
     let mut i18n = use_init_i18n(|| {
+        // Concatenate shared (plan-ai-design) + app-specific translations, the
+        // same way mac-mgmt does.
+        let en: &'static str = Box::leak(
+            format!("{}\n{}", plan_ai_design::i18n::EN_US, include_str!("./en-US.ftl")).into_boxed_str(),
+        );
+        let de: &'static str = Box::leak(
+            format!("{}\n{}", plan_ai_design::i18n::DE_DE, include_str!("./de-DE.ftl")).into_boxed_str(),
+        );
         I18nConfig::new(langid!("en-US"))
-            .with_locale(Locale::new_static(langid!("en-US"), plan_ai_design::i18n::EN_US))
-            .with_locale(Locale::new_static(langid!("de-DE"), plan_ai_design::i18n::DE_DE))
+            .with_locale(Locale::new_static(langid!("en-US"), en))
+            .with_locale(Locale::new_static(langid!("de-DE"), de))
     });
     let css_href = format!("/tailwind.css?v={}", env!("BUILD_TIMESTAMP"));
 

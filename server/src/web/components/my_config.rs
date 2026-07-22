@@ -2,6 +2,7 @@
 //! delete. Regenerating replaces the peer's private key and re-renders config.
 
 use dioxus::prelude::*;
+use dioxus_i18n::t;
 use plan_ai_design::{Alert, AlertVariant, Button, ButtonVariant, Card};
 use uuid::Uuid;
 
@@ -49,10 +50,8 @@ pub fn MyConfig() -> Element {
 
     rsx! {
         div { class: "mb-8",
-            h2 { class: "text-2xl font-semibold text-fg-strong tracking-tight", "My devices" }
-            p { class: "text-fg-muted text-sm mt-1",
-                "Generate a WireGuard configuration to reach the company network. Regenerating replaces the key and invalidates the old config."
-            }
+            h2 { class: "text-2xl font-semibold text-fg-strong tracking-tight", {t!("devices-title")} }
+            p { class: "text-fg-muted text-sm mt-1", {t!("devices-subtitle")} }
         }
 
         if let Some(e) = error() {
@@ -62,10 +61,10 @@ pub fn MyConfig() -> Element {
         Card { class: "mb-6 p-4",
             div { class: "flex items-end gap-3",
                 div { class: "flex-1",
-                    label { class: "label block text-sm text-fg-muted mb-1", "New device name" }
+                    label { class: "label block text-sm text-fg-muted mb-1", {t!("devices-new-name-label")} }
                     input {
                         class: "input w-full",
-                        placeholder: "e.g. laptop",
+                        placeholder: t!("devices-new-name-placeholder"),
                         value: "{new_name}",
                         oninput: move |e| new_name.set(e.value()),
                     }
@@ -74,20 +73,20 @@ pub fn MyConfig() -> Element {
                     variant: ButtonVariant::Primary,
                     disabled: at_limit,
                     onclick: create,
-                    "Generate"
+                    {t!("action-generate")}
                 }
             }
             p { class: "text-fg-muted text-xs mt-2",
-                "{used} of {limit} devices used."
+                {t!("devices-quota", used: used, limit: limit)}
                 if at_limit {
-                    span { class: "text-danger", " Device limit reached." }
+                    span { class: "text-danger", " " {t!("devices-limit-reached")} }
                 }
             }
         }
 
         match &*peers.read() {
             Some(Ok(list)) if list.is_empty() => rsx! {
-                p { class: "text-fg-muted text-sm", "No configurations yet." }
+                p { class: "text-fg-muted text-sm", {t!("devices-empty")} }
             },
             Some(Ok(list)) => rsx! {
                 div { class: "flex flex-col gap-3",
@@ -106,13 +105,13 @@ pub fn MyConfig() -> Element {
                 }
             },
             Some(Err(e)) => rsx! { Alert { variant: AlertVariant::Danger, "{e}" } },
-            None => rsx! { p { class: "text-fg-muted", "Loading…" } },
+            None => rsx! { p { class: "text-fg-muted", {t!("common-loading")} } },
         }
 
         if let Some((_, cfg)) = shown() {
             Card { class: "mt-6 p-4",
                 div { class: "flex items-center mb-2",
-                    h3 { class: "text-sm font-semibold text-fg-strong flex-1", "Configuration" }
+                    h3 { class: "text-sm font-semibold text-fg-strong flex-1", {t!("devices-config-heading")} }
                     Button {
                         variant: ButtonVariant::Secondary,
                         onclick: {
@@ -128,7 +127,7 @@ pub fn MyConfig() -> Element {
                                 }
                             }
                         },
-                        "Copy"
+                        {t!("action-copy")}
                     }
                 }
                 pre { class: "text-xs bg-surface-2 rounded-md p-3 overflow-x-auto whitespace-pre", "{cfg}" }
@@ -148,7 +147,7 @@ fn PeerRow(
     on_error: EventHandler<String>,
 ) -> Element {
     let short_key: String = public_key.chars().take(16).collect();
-    let display_name = if name.is_empty() { "(unnamed)".to_string() } else { name };
+    let display_name = if name.is_empty() { t!("device-unnamed") } else { name };
 
     rsx! {
         Card { class: "p-4 flex items-center gap-4",
@@ -164,7 +163,7 @@ fn PeerRow(
                         Err(e) => on_error.call(e.to_string()),
                     }
                 },
-                "Show config"
+                {t!("action-show-config")}
             }
             Button {
                 variant: ButtonVariant::Secondary,
@@ -180,7 +179,7 @@ fn PeerRow(
                         Err(e) => on_error.call(e.to_string()),
                     }
                 },
-                "Regenerate"
+                {t!("action-regenerate")}
             }
             Button {
                 variant: ButtonVariant::Danger,
@@ -190,7 +189,7 @@ fn PeerRow(
                         Err(e) => on_error.call(e.to_string()),
                     }
                 },
-                "Delete"
+                {t!("action-delete")}
             }
         }
     }
