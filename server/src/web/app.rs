@@ -4,10 +4,10 @@ use dioxus::prelude::*;
 use dioxus_i18n::prelude::*;
 use dioxus_i18n::unic_langid::langid;
 
+use super::components::admin::Admin;
 use super::components::interfaces::Interfaces;
 use super::components::layout::Layout;
 use super::components::my_config::MyConfig;
-use super::components::peers::Peers;
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 pub enum Route {
@@ -16,8 +16,8 @@ pub enum Route {
     MyConfig {},
     #[route("/interfaces")]
     Interfaces {},
-    #[route("/peers")]
-    Peers {},
+    #[route("/admin")]
+    Admin {},
 }
 
 #[component]

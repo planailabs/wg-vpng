@@ -61,6 +61,14 @@ pub struct WireguardConfig {
     pub allowed_ips: String,
     #[serde(default = "default_keepalive")]
     pub keepalive: u16,
+    /// Default number of devices (configs) a user may create. Overridable
+    /// per-user by an admin.
+    #[serde(default = "default_device_limit")]
+    pub device_limit: i32,
+}
+
+fn default_device_limit() -> i32 {
+    5
 }
 
 fn default_iface_name() -> String {

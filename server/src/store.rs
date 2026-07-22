@@ -37,6 +37,21 @@ pub struct Peer {
     pub address: String,
 }
 
+/// A user with access-control + device-limit fields (admin view).
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct User {
+    pub id: Uuid,
+    pub email: String,
+    pub name: String,
+    pub is_admin: bool,
+    pub banned: bool,
+    pub access_revoked: bool,
+    /// Per-user override; None → global default.
+    pub device_limit: Option<i32>,
+}
+
+const USER_COLS: &str = "id, email, name, is_admin, banned, access_revoked, device_limit";
+
 const IFACE_COLS: &str =
     "id, name, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, keepalive";
 const PEER_COLS: &str =
@@ -193,9 +208,106 @@ pub async fn delete_peer(pool: &PgPool, peer_id: Uuid) -> Result<()> {
     Ok(())
 }
 
+// ── Users / devices ───────────────────────────────────────────────────
+
+/// A user plus their current device count (admin listing).
+#[derive(Debug, Clone)]
+pub struct UserWithCount {
+    pub user: User,
+    pub device_count: i64,
+}
+
+pub async fn get_user(pool: &PgPool, id: Uuid) -> Result<Option<User>> {
+    Ok(sqlx::query_as::<_, User>(&format!("SELECT {USER_COLS} FROM users WHERE id = $1"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?)
+}
+
+pub async fn list_users_with_counts(pool: &PgPool) -> Result<Vec<UserWithCount>> {
+    let users =
+        sqlx::query_as::<_, User>(&format!("SELECT {USER_COLS} FROM users ORDER BY email"))
+            .fetch_all(pool)
+            .await?;
+    let mut out = Vec::with_capacity(users.len());
+    for user in users {
+        let device_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM wg_peers WHERE user_id = $1")
+                .bind(user.id)
+                .fetch_one(pool)
+                .await?;
+        out.push(UserWithCount { user, device_count });
+    }
+    Ok(out)
+}
+
+pub async fn count_user_devices(pool: &PgPool, user_id: Uuid) -> Result<i64> {
+    Ok(sqlx::query_scalar("SELECT count(*) FROM wg_peers WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?)
+}
+
+/// Effective device limit for a user: their override, else the global default.
+pub fn effective_device_limit(user: &User, global_default: i32) -> i32 {
+    user.device_limit.unwrap_or(global_default)
+}
+
+pub async fn set_device_limit(pool: &PgPool, user_id: Uuid, limit: Option<i32>) -> Result<()> {
+    sqlx::query("UPDATE users SET device_limit = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(limit)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_banned(pool: &PgPool, user_id: Uuid, banned: bool) -> Result<()> {
+    sqlx::query("UPDATE users SET banned = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(banned)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_access_revoked(pool: &PgPool, user_id: Uuid, revoked: bool) -> Result<()> {
+    sqlx::query("UPDATE users SET access_revoked = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(revoked)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Delete a user; their devices cascade (and must be dropped from the backend
+/// afterwards via a sync).
+pub async fn delete_user(pool: &PgPool, user_id: Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Peers whose owner may currently connect: unowned, or owned by a user that
+/// is neither banned nor access-revoked. This is what gets pushed to the
+/// backend, so revoking/banning immediately cuts a user off.
+pub async fn list_active_peers(pool: &PgPool, interface_id: Uuid) -> Result<Vec<Peer>> {
+    Ok(sqlx::query_as::<_, Peer>(&format!(
+        "SELECT {} FROM wg_peers p LEFT JOIN users u ON p.user_id = u.id \
+         WHERE p.interface_id = $1 AND (u.id IS NULL OR (NOT u.banned AND NOT u.access_revoked)) \
+         ORDER BY p.created_at",
+        PEER_COLS.split(", ").map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", ")
+    ))
+    .bind(interface_id)
+    .fetch_all(pool)
+    .await?)
+}
+
 // ── Reconcile + render ────────────────────────────────────────────────
 
-/// Push the interface + its full peer set to the backend.
+/// Push the interface + all its *active* peers to the backend.
 pub async fn sync_interface(
     pool: &PgPool,
     backend: &dyn WireguardBackend,
@@ -204,7 +316,7 @@ pub async fn sync_interface(
     let iface = get_interface(pool, interface_id)
         .await?
         .context("interface not found")?;
-    let peers = list_peers(pool, interface_id).await?;
+    let peers = list_active_peers(pool, interface_id).await?;
 
     let ispec = InterfaceSpec {
         name: iface.name.clone(),
@@ -225,6 +337,15 @@ pub async fn sync_interface(
         .apply(&ispec, &pspecs)
         .await
         .context("backend apply")?;
+    Ok(())
+}
+
+/// Reconcile every interface (used after a change that can affect any
+/// interface's active peer set, e.g. banning or deleting a user).
+pub async fn sync_all(pool: &PgPool, backend: &dyn WireguardBackend) -> Result<()> {
+    for iface in list_interfaces(pool).await? {
+        sync_interface(pool, backend, iface.id).await?;
+    }
     Ok(())
 }
 
@@ -277,6 +398,7 @@ mod tests {
             dns: Some("10.8.0.1".into()),
             allowed_ips: "10.8.0.0/24".into(),
             keepalive: 25,
+            device_limit: 5,
         }
     }
 
@@ -325,5 +447,51 @@ mod tests {
         delete_peer(&pool, p2.id).await.unwrap();
         sync_interface(&pool, &backend, iface.id).await.unwrap();
         assert_eq!(backend.applied.lock().unwrap().len(), 1);
+    }
+
+    // Revoking / banning a user drops their devices from the backend's active
+    // set; deleting the user removes them entirely.
+    #[tokio::test]
+    async fn access_control_gates_active_peers() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let iface = ensure_default_interface(&pool, &test_wg_config()).await.unwrap();
+        let uid: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        create_peer(&pool, iface.id, Some(uid), "d1").await.unwrap();
+        create_peer(&pool, iface.id, Some(uid), "d2").await.unwrap();
+        assert_eq!(count_user_devices(&pool, uid).await.unwrap(), 2);
+        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 2);
+
+        // Revoke → no active peers, but rows retained.
+        set_access_revoked(&pool, uid, true).await.unwrap();
+        assert!(list_active_peers(&pool, iface.id).await.unwrap().is_empty());
+        assert_eq!(count_user_devices(&pool, uid).await.unwrap(), 2);
+
+        // Restore → active again.
+        set_access_revoked(&pool, uid, false).await.unwrap();
+        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 2);
+
+        // Ban → inactive.
+        set_banned(&pool, uid, true).await.unwrap();
+        assert!(list_active_peers(&pool, iface.id).await.unwrap().is_empty());
+
+        // Delete user → devices cascade away.
+        delete_user(&pool, uid).await.unwrap();
+        assert_eq!(list_peers(&pool, iface.id).await.unwrap().len(), 0);
+
+        // Per-user limit override beats the global default.
+        let u2: User = sqlx::query_as::<_, User>(&format!(
+            "INSERT INTO users (email, device_limit) VALUES ('u2@x', 2) RETURNING {USER_COLS}"
+        ))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(effective_device_limit(&u2, 5), 2);
     }
 }

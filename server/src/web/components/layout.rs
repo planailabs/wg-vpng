@@ -20,10 +20,10 @@ pub fn Layout() -> Element {
         div { class: "h-screen h-dvh w-full flex overflow-hidden",
             nav { class: "shrink-0 w-56 border-r border-line bg-surface flex flex-col p-4 gap-1",
                 div { class: "text-lg font-semibold text-fg-strong mb-4", "wg-vpng" }
-                NavLink { to: Route::MyConfig {}, label: "My VPN" }
+                NavLink { to: Route::MyConfig {}, label: "My devices" }
                 if is_admin {
                     NavLink { to: Route::Interfaces {}, label: "Interface" }
-                    NavLink { to: Route::Peers {}, label: "All peers" }
+                    NavLink { to: Route::Admin {}, label: "Users" }
                 }
             }
 

@@ -60,6 +60,7 @@ pkgs.testers.runNixOSTest {
     print("created:", peer)
     pid = machine.succeed(f"echo '{peer}' | jq -r .id").strip()
     pub = machine.succeed(f"echo '{peer}' | jq -r .public_key").strip()
+    uid = machine.succeed(f"echo '{peer}' | jq -r .user_id").strip()
 
     # The kernel interface must now carry that peer.
     machine.wait_until_succeeds(f"wg show wg0 | grep -q '{pub}'", timeout=15)
@@ -80,6 +81,18 @@ pkgs.testers.runNixOSTest {
     assert newpub != pub, f"regenerate did not change key: {newpub}"
     machine.wait_until_succeeds(f"wg show wg0 | grep -q '{newpub}'", timeout=15)
     machine.fail(f"wg show wg0 | grep -q '{pub}'")
+
+    # Ban the owner: their device is dropped from the interface; unban restores.
+    machine.succeed(
+        f"curl -sf -X POST {auth} -H 'content-type: application/json' "
+        f"-d '{{\"banned\":true}}' http://localhost:8080/api/v1/users/{uid}/ban"
+    )
+    machine.wait_until_fails(f"wg show wg0 | grep -q '{newpub}'", timeout=15)
+    machine.succeed(
+        f"curl -sf -X POST {auth} -H 'content-type: application/json' "
+        f"-d '{{\"banned\":false}}' http://localhost:8080/api/v1/users/{uid}/ban"
+    )
+    machine.wait_until_succeeds(f"wg show wg0 | grep -q '{newpub}'", timeout=15)
 
     # Delete: the peer is removed from the interface.
     machine.succeed(f"curl -sf -X DELETE {auth} http://localhost:8080/api/v1/peers/{pid}")

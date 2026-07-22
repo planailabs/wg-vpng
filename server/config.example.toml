@@ -26,6 +26,9 @@ dns = "10.8.0.1"
 # Networks routed through the tunnel (client AllowedIPs).
 allowed_ips = "10.8.0.0/24"
 keepalive = 25
+# Default number of devices (configs) each user may create. Admins can
+# override this per-user from the Users page.
+device_limit = 5
 
 # MikroTik backend instead of self-managed:
 # [wireguard.backend.mikrotik]

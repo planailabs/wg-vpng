@@ -8,7 +8,12 @@ is applied through a pluggable backend.
 ## Features
 
 - **OIDC login** via [`plan-ai-auth`] (same as mac-mgmt / web-agency).
-- **Per-user configs** — generate, show, download, regenerate, delete.
+- **Per-user devices** — each user generates multiple device configs (show,
+  copy, regenerate, delete), bounded by a configurable per-user device limit.
+- **Admin console** (`/admin`) — do everything a user can, for any user, plus
+  set device limits, revoke VPN access, ban (blocks login + drops devices), and
+  delete users. Revoking/banning immediately drops the user's peers from the
+  backend.
 - **Pluggable backends** (`[wireguard] backend = …`):
   - `self-managed` — a kernel WireGuard interface driven by `wg` + `ip`.
   - `network-manager` — an `nmcli` keyfile connection profile.
@@ -40,8 +45,10 @@ postgres, wireguard-tools):
 
 ```sh
 nix develop
-cargo test                                   # unit + backend tests
-dx serve --package wg-vpng-server            # run locally (needs a postgres + config.toml)
+# unit + backend + pgtemp tests (server feature avoids the wasm build)
+cargo test -p wg-vpng-server --no-default-features --features server
+cargo test -p mikrotik-api
+overmind start                               # Procfile: dx serve (DEV_ONLY_NO_AUTH) + tailwind watch
 nix build .#checks.x86_64-linux.integration -L   # NixOS VM end-to-end test
 nix build .#wg-vpng-server                   # the production build
 ```

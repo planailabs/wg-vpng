@@ -21,6 +21,27 @@ pub struct PeerView {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserAdminView {
+    pub id: Uuid,
+    pub email: String,
+    pub name: String,
+    pub is_admin: bool,
+    pub banned: bool,
+    pub access_revoked: bool,
+    pub device_limit: Option<i32>,
+    pub device_count: i64,
+    /// Effective limit (override or global default), for display.
+    pub effective_limit: i32,
+}
+
+/// Current user's device usage against their limit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceQuota {
+    pub used: i64,
+    pub limit: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InterfaceView {
     pub id: Uuid,
     pub name: String,

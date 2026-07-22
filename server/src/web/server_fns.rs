@@ -3,7 +3,7 @@
 
 use dioxus::prelude::*;
 
-use super::dto::{CurrentUser, InterfaceView, PeerView};
+use super::dto::{CurrentUser, DeviceQuota, InterfaceView, PeerView, UserAdminView};
 use uuid::Uuid;
 
 #[server]
@@ -58,15 +58,116 @@ pub async fn all_peers() -> Result<Vec<PeerView>, ServerFnError> {
     Ok(out)
 }
 
+/// Current user's device usage against their configured limit.
+#[server]
+pub async fn device_quota() -> Result<DeviceQuota, ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    let user = crate::web::user::current_user().await?;
+    let uid = crate::web::user::current_user_id(&pool, &user).await?;
+    let used = crate::store::count_user_devices(&pool, uid).await.map_err(err)?;
+    Ok(DeviceQuota { used, limit: effective_limit_for(&pool, uid).await? })
+}
+
 #[server]
 pub async fn create_my_peer(name: String) -> Result<PeerView, ServerFnError> {
     let pool = crate::server_state::pool()?;
     let user = crate::web::user::current_user().await?;
     let uid = crate::web::user::current_user_id(&pool, &user).await?;
+
+    // Enforce access + device limit for self-service creation.
+    let db_user = crate::store::get_user(&pool, uid).await.map_err(err)?;
+    if db_user.as_ref().is_some_and(|u| u.banned || u.access_revoked) {
+        return Err(ServerFnError::new("your access has been revoked"));
+    }
+    let used = crate::store::count_user_devices(&pool, uid).await.map_err(err)?;
+    let limit = effective_limit_for(&pool, uid).await?;
+    if used >= limit as i64 {
+        return Err(ServerFnError::new(format!("device limit reached ({limit})")));
+    }
+
     let iface = default_interface_id(&pool).await?;
     let peer = crate::store::create_peer(&pool, iface, Some(uid), &name).await.map_err(err)?;
     sync(&pool, iface).await?;
     Ok(peer_view(peer, Some(user.email)))
+}
+
+// ── Admin ─────────────────────────────────────────────────────────────
+
+#[server]
+pub async fn admin_list_users() -> Result<Vec<UserAdminView>, ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    let global = crate::config::config().wireguard.device_limit;
+    let rows = crate::store::list_users_with_counts(&pool).await.map_err(err)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| UserAdminView {
+            id: r.user.id,
+            email: r.user.email.clone(),
+            name: r.user.name.clone(),
+            is_admin: r.user.is_admin,
+            banned: r.user.banned,
+            access_revoked: r.user.access_revoked,
+            device_limit: r.user.device_limit,
+            device_count: r.device_count,
+            effective_limit: crate::store::effective_device_limit(&r.user, global),
+        })
+        .collect())
+}
+
+#[server]
+pub async fn admin_user_devices(user_id: Uuid) -> Result<Vec<PeerView>, ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    let email = sqlx::query_scalar::<_, String>("SELECT email FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(err)?;
+    let peers = crate::store::list_peers_for_user(&pool, user_id).await.map_err(err)?;
+    Ok(peers.into_iter().map(|p| peer_view(p, email.clone())).collect())
+}
+
+/// Admin creates a device for a user (bypasses the per-user limit).
+#[server]
+pub async fn admin_create_device(user_id: Uuid, name: String) -> Result<PeerView, ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    let iface = default_interface_id(&pool).await?;
+    let peer = crate::store::create_peer(&pool, iface, Some(user_id), &name).await.map_err(err)?;
+    sync(&pool, iface).await?;
+    Ok(peer_view(peer, None))
+}
+
+#[server]
+pub async fn admin_set_device_limit(user_id: Uuid, limit: Option<i32>) -> Result<(), ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    crate::store::set_device_limit(&pool, user_id, limit).await.map_err(err)
+}
+
+#[server]
+pub async fn admin_set_banned(user_id: Uuid, banned: bool) -> Result<(), ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    crate::store::set_banned(&pool, user_id, banned).await.map_err(err)?;
+    sync_all(&pool).await
+}
+
+#[server]
+pub async fn admin_set_revoked(user_id: Uuid, revoked: bool) -> Result<(), ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    crate::store::set_access_revoked(&pool, user_id, revoked).await.map_err(err)?;
+    sync_all(&pool).await
+}
+
+#[server]
+pub async fn admin_delete_user(user_id: Uuid) -> Result<(), ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    crate::store::delete_user(&pool, user_id).await.map_err(err)?;
+    sync_all(&pool).await
 }
 
 #[server]
@@ -183,4 +284,17 @@ async fn sync(pool: &sqlx::PgPool, interface_id: Uuid) -> Result<(), ServerFnErr
     crate::store::sync_interface(pool, crate::server_state::backend(), interface_id)
         .await
         .map_err(err)
+}
+
+#[cfg(feature = "server")]
+async fn sync_all(pool: &sqlx::PgPool) -> Result<(), ServerFnError> {
+    crate::store::sync_all(pool, crate::server_state::backend()).await.map_err(err)
+}
+
+/// A user's effective device limit (their override, else the global default).
+#[cfg(feature = "server")]
+async fn effective_limit_for(pool: &sqlx::PgPool, user_id: Uuid) -> Result<i32, ServerFnError> {
+    let global = crate::config::config().wireguard.device_limit;
+    let user = crate::store::get_user(pool, user_id).await.map_err(err)?;
+    Ok(user.map(|u| crate::store::effective_device_limit(&u, global)).unwrap_or(global))
 }

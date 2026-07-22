@@ -78,5 +78,36 @@ fn build_registry(pool: PgPool) -> Registry<PgPool> {
         );
     }
 
+    {
+        let mut r = reg.resource("users", "user", "Users");
+        r.list("List users with device counts (admin).", |pool, p, i: UserListInput| async move {
+            user_list(pool, p, i).await
+        });
+        r.custom(
+            "ban",
+            Risk::Destructive,
+            OnItem::Yes,
+            "Ban or unban a user (banned users cannot log in and their devices are dropped).",
+            |pool, p, i: UserBanInput| async move { user_ban(pool, p, i).await },
+        );
+        r.custom(
+            "revoke",
+            Risk::Mutating,
+            OnItem::Yes,
+            "Revoke or restore a user's VPN access (devices retained, dropped from the backend).",
+            |pool, p, i: UserRevokeInput| async move { user_revoke(pool, p, i).await },
+        );
+        r.custom(
+            "set_limit",
+            Risk::Mutating,
+            OnItem::Yes,
+            "Set a user's device limit (null = global default).",
+            |pool, p, i: UserLimitInput| async move { user_set_limit(pool, p, i).await },
+        );
+        r.delete("Delete a user and all their devices (admin).", |pool, p, i: UserIdInput| async move {
+            user_delete(pool, p, i).await
+        });
+    }
+
     reg
 }

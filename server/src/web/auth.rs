@@ -43,17 +43,23 @@ impl UserResolver for PgUserResolver {
         let is_admin = self.admin_emails.iter().any(|e| e == email);
         let display_name = name.unwrap_or("");
 
-        let (id, email, name, is_admin) = sqlx::query_as::<_, (Uuid, String, String, bool)>(
-            "INSERT INTO users (email, name, is_admin) VALUES ($1,$2,$3) \
-             ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, \
-               is_admin = users.is_admin OR $3 \
-             RETURNING id, email, name, is_admin",
-        )
-        .bind(email)
-        .bind(display_name)
-        .bind(is_admin)
-        .fetch_one(&self.pool)
-        .await?;
+        let (id, email, name, is_admin, banned) =
+            sqlx::query_as::<_, (Uuid, String, String, bool, bool)>(
+                "INSERT INTO users (email, name, is_admin) VALUES ($1,$2,$3) \
+                 ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, \
+                   is_admin = users.is_admin OR $3 \
+                 RETURNING id, email, name, is_admin, banned",
+            )
+            .bind(email)
+            .bind(display_name)
+            .bind(is_admin)
+            .fetch_one(&self.pool)
+            .await?;
+
+        // Banned accounts cannot authenticate at all.
+        if banned {
+            anyhow::bail!("account is banned");
+        }
 
         for org_name in auto_join_orgs {
             if let Some(org_id) = sqlx::query_scalar::<_, Uuid>("SELECT id FROM organizations WHERE name = $1")

@@ -51,6 +51,9 @@
             # Ephemeral test databases (pgtemp spawns initdb/postgres) + client
             postgresql
 
+            # Local dev process manager (runs the Procfile: server + tailwind)
+            overmind
+
             # WireGuard tooling used by the self-managed + NetworkManager backends
             wireguard-tools
             iproute2

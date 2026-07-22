@@ -6,7 +6,7 @@ use plan_ai_design::{Alert, AlertVariant, Button, ButtonVariant, Card};
 use uuid::Uuid;
 
 use crate::web::server_fns::{
-    create_my_peer, delete_peer, my_peers, peer_config_text, regenerate_peer,
+    create_my_peer, delete_peer, device_quota, my_peers, peer_config_text, regenerate_peer,
 };
 
 #[component]
@@ -16,6 +16,15 @@ pub fn MyConfig() -> Element {
         let _ = refresh();
         async move { my_peers().await }
     })?;
+    let quota = use_server_future(move || {
+        let _ = refresh();
+        async move { device_quota().await }
+    })?;
+    let (used, limit) = match &*quota.read() {
+        Some(Ok(q)) => (q.used, q.limit),
+        _ => (0, 0),
+    };
+    let at_limit = used >= limit as i64;
     let mut new_name = use_signal(String::new);
     let mut shown = use_signal(|| Option::<(Uuid, String)>::None);
     let mut error = use_signal(|| Option::<String>::None);
@@ -48,17 +57,30 @@ pub fn MyConfig() -> Element {
             Alert { variant: AlertVariant::Danger, class: "mb-4", "{e}" }
         }
 
-        Card { class: "mb-6 p-4 flex items-end gap-3",
-            div { class: "flex-1",
-                label { class: "label block text-sm text-fg-muted mb-1", "New configuration name" }
-                input {
-                    class: "input w-full",
-                    placeholder: "e.g. laptop",
-                    value: "{new_name}",
-                    oninput: move |e| new_name.set(e.value()),
+        Card { class: "mb-6 p-4",
+            div { class: "flex items-end gap-3",
+                div { class: "flex-1",
+                    label { class: "label block text-sm text-fg-muted mb-1", "New device name" }
+                    input {
+                        class: "input w-full",
+                        placeholder: "e.g. laptop",
+                        value: "{new_name}",
+                        oninput: move |e| new_name.set(e.value()),
+                    }
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    disabled: at_limit,
+                    onclick: create,
+                    "Generate"
                 }
             }
-            Button { variant: ButtonVariant::Primary, onclick: create, "Generate" }
+            p { class: "text-fg-muted text-xs mt-2",
+                "{used} of {limit} devices used."
+                if at_limit {
+                    span { class: "text-danger", " Device limit reached." }
+                }
+            }
         }
 
         match &*peers.read() {

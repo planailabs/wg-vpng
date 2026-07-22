@@ -226,6 +226,119 @@ pub async fn peer_config(
     })
 }
 
+// ── Users (admin) ─────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct UserOutput {
+    pub id: Uuid,
+    pub email: String,
+    pub name: String,
+    pub is_admin: bool,
+    pub banned: bool,
+    pub access_revoked: bool,
+    pub device_limit: Option<i32>,
+    pub device_count: i64,
+}
+
+async fn sync_all(pool: &PgPool) -> Result<(), ApiError> {
+    crate::store::sync_all(pool, crate::server_state::backend())
+        .await
+        .map_err(internal)
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UserListInput {}
+
+pub async fn user_list(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    _i: UserListInput,
+) -> Result<Vec<UserOutput>, ApiError> {
+    p.require_admin()?;
+    let rows = crate::store::list_users_with_counts(&pool).await.map_err(internal)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| UserOutput {
+            id: r.user.id,
+            email: r.user.email,
+            name: r.user.name,
+            is_admin: r.user.is_admin,
+            banned: r.user.banned,
+            access_revoked: r.user.access_revoked,
+            device_limit: r.user.device_limit,
+            device_count: r.device_count,
+        })
+        .collect())
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UserIdInput {
+    pub id: Uuid,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UserBanInput {
+    pub id: Uuid,
+    pub banned: bool,
+}
+
+pub async fn user_ban(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: UserBanInput,
+) -> Result<DeleteOutput, ApiError> {
+    p.require_admin()?;
+    crate::store::set_banned(&pool, i.id, i.banned).await.map_err(internal)?;
+    sync_all(&pool).await?;
+    Ok(DeleteOutput { deleted: i.banned })
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UserRevokeInput {
+    pub id: Uuid,
+    pub revoked: bool,
+}
+
+pub async fn user_revoke(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: UserRevokeInput,
+) -> Result<DeleteOutput, ApiError> {
+    p.require_admin()?;
+    crate::store::set_access_revoked(&pool, i.id, i.revoked).await.map_err(internal)?;
+    sync_all(&pool).await?;
+    Ok(DeleteOutput { deleted: i.revoked })
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UserLimitInput {
+    pub id: Uuid,
+    /// New per-user device limit; omit/null to fall back to the global default.
+    #[serde(default)]
+    pub limit: Option<i32>,
+}
+
+pub async fn user_set_limit(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: UserLimitInput,
+) -> Result<DeleteOutput, ApiError> {
+    p.require_admin()?;
+    crate::store::set_device_limit(&pool, i.id, i.limit).await.map_err(internal)?;
+    Ok(DeleteOutput { deleted: true })
+}
+
+pub async fn user_delete(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: UserIdInput,
+) -> Result<DeleteOutput, ApiError> {
+    p.require_admin()?;
+    crate::store::delete_user(&pool, i.id).await.map_err(internal)?;
+    sync_all(&pool).await?;
+    Ok(DeleteOutput { deleted: true })
+}
+
 async fn upsert_user(pool: &PgPool, email: &str) -> Result<Uuid, ApiError> {
     sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO users (email) VALUES ($1) \
