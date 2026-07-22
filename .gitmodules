@@ -1,0 +1,6 @@
+[submodule "common"]
+	path = common
+	url = ../common
+[submodule "design"]
+	path = design
+	url = ../design

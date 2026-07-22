@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "common/plan-ai-auth",
+    "common/plan-ai-html",
+    "common/plan-ai-api-mcp",
+    "common/plan-ai-api-mcp-macros",
+    "mikrotik-api",
+    "server",
+]
+# plan-ai-design is consumed by path (design/ submodule) but is not a workspace
+# member — it pins its own edition/deps and only needs to resolve as a path dep.
+exclude = ["design", "common"]
+resolver = "3"
+
+[workspace.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rmcp = { version = "0.17", default-features = false, features = ["server", "transport-io", "macros"] }
+
+# The fullstack `--embed` build needs the embed-capable dioxus fork (same
+# fork mac-mgmt / web-agency use). dioxus-i18n is patched for dioxus 0.8.
+[patch.crates-io]
+dioxus = { git = "https://github.com/mkg20001/dioxus.git", branch = "feat/embed" }
+dioxus-server = { git = "https://github.com/mkg20001/dioxus.git", branch = "feat/embed" }
+dioxus-i18n = { git = "https://github.com/mkg20001/dioxus-i18n.git", branch = "feat/dioxus-0.8" }

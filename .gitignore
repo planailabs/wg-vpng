@@ -1,0 +1,10 @@
+/target
+**/target
+result
+result-*
+.direnv
+config.toml
+server/public/tailwind.css
+node_modules
+server/node_modules
+.dx
