@@ -82,8 +82,11 @@ in
           serviceConfig = {
             User = lib.mkForce "root";
             Group = lib.mkForce "root";
-            # Allow writing /etc/NetworkManager/system-connections.
-            ProtectSystem = lib.mkForce "full";
+            # Keep ProtectSystem=strict (from the module) but carve out NM's
+            # keyfile dir so the backend can write connection profiles there
+            # (they must be root-owned, hence User=root). '-' tolerates the dir
+            # not existing yet.
+            ReadWritePaths = [ "-/etc/NetworkManager/system-connections" ];
           };
         };
       };

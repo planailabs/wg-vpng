@@ -59,18 +59,24 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("wg-vpng-server.service")
     machine.wait_for_open_port(8080)
 
-    # Seed an admin API token: token_hash = sha256("admintoken").
+    # Seed an admin API token: token_hash = sha256("admintoken"). Seed as the
+    # postgres superuser so it works whichever role owns the tables (the NM
+    # backend runs the service as root; others as wg-vpng).
     hash = machine.succeed("printf admintoken | sha256sum | cut -d' ' -f1").strip()
     machine.succeed(
-        f"sudo -u wg-vpng psql wg-vpng -c \"INSERT INTO tokens (token_hash, kind) VALUES ('{hash}', 'admin')\""
+        f"sudo -u postgres psql wg-vpng -c \"INSERT INTO tokens (token_hash, kind) VALUES ('{hash}', 'admin')\""
     )
     auth = "-H 'Authorization: Bearer admintoken'"
 
     # Create the interface (admin-managed) with this backend.
-    machine.succeed(
-        "curl -sf -X POST " + auth + " -H 'content-type: application/json' "
+    code = machine.succeed(
+        "curl -s -o /tmp/ifresp -w '%{http_code}' -X POST " + auth + " -H 'content-type: application/json' "
         "-d @/etc/wg-vpng-test/interface.json http://localhost:8080/api/v1/interfaces"
-    )
+    ).strip()
+    if code != "200":
+        print("interface create HTTP", code, "body:", machine.succeed("cat /tmp/ifresp"))
+        print(machine.succeed("journalctl -u wg-vpng-server --no-pager | tail -30"))
+    assert code == "200", f"interface create returned HTTP {code}"
 
     # Create a device for a user (single interface -> id can be omitted).
     peer = machine.succeed(
