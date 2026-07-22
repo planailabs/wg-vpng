@@ -26,12 +26,8 @@ in
       example = lib.literalExpression ''
         {
           web.port = 8080;
-          wireguard = {
-            backend = "self-managed";
-            address = "10.8.0.1/24";
-            endpoint = "vpn.example.com:51820";
-            dns = "10.8.0.1";
-          };
+          # Interfaces (and their backends) are created in the admin UI, not here.
+          secrets.encryption_key = "generate-with-openssl-rand-base64-32";
           auth = {
             cookie_secret = "generate-with-openssl-rand-hex-32";
             external_url = "https://vpn.example.com";
@@ -61,7 +57,7 @@ in
     openFirewall = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Open the WireGuard listen port (and web port) in the firewall.";
+      description = "Open the web port in the firewall (WireGuard ports are per-interface).";
     };
   };
 
@@ -122,8 +118,10 @@ in
       }];
     };
 
+    # Interfaces (and their listen ports) are created at runtime in the admin
+    # UI, so only the web port is opened here; open per-interface WireGuard UDP
+    # ports yourself (or set a range) as you create them.
     networking.firewall = lib.mkIf cfg.openFirewall {
-      allowedUDPPorts = [ (cfg.settings.wireguard.listen_port or 51820) ];
       allowedTCPPorts = [ (cfg.settings.web.port or 8080) ];
     };
   };

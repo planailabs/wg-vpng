@@ -9,6 +9,8 @@ mod backend;
 #[cfg(feature = "server")]
 mod config;
 #[cfg(feature = "server")]
+mod crypto;
+#[cfg(feature = "server")]
 mod db;
 #[cfg(feature = "server")]
 mod server_state;
@@ -32,22 +34,17 @@ async fn init_server() {
 
     server_state::set_pool(pool.clone());
 
-    // Select + install the WireGuard backend.
-    let backend = cfg
-        .wireguard
-        .backend
-        .build()
-        .expect("failed to build wireguard backend");
-    server_state::set_backend(backend);
-
-    // Seed the interface (keypair generated on first boot) and push current
-    // state to the backend so restarts converge the real world to the DB.
-    let iface = store::ensure_default_interface(&pool, &cfg.wireguard)
-        .await
-        .expect("failed to ensure default interface");
-    if let Err(e) = store::sync_interface(&pool, server_state::backend(), iface.id).await {
-        tracing::warn!("initial backend sync failed (continuing): {e:#}");
+    // Load the credential encryption key from config, if provided. Required
+    // only to create/use MikroTik backends (which store a password).
+    if let Some(secrets) = &cfg.secrets {
+        crypto::load_from_config(&secrets.encryption_key)
+            .expect("invalid [secrets] encryption_key");
     }
+
+    // Interfaces are admin-managed; on boot, reconcile every stored interface
+    // to its (per-interface) backend. Best-effort so one bad backend doesn't
+    // block startup.
+    store::sync_all_best_effort(&pool).await;
 
     // Install the OIDC user resolver.
     web::auth::install_resolver(pool.clone());

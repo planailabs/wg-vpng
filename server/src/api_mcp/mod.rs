@@ -35,12 +35,20 @@ fn build_registry(pool: PgPool) -> Registry<PgPool> {
         r.list("List managed WireGuard interfaces.", |pool, p, i: InterfaceListInput| async move {
             interface_list(pool, p, i).await
         });
-        r.get("Get an interface (default interface when id omitted).", |pool, p, i: InterfaceGetInput| async move {
+        r.get("Get an interface (the sole interface when id omitted).", |pool, p, i: InterfaceGetInput| async move {
             interface_get(pool, p, i).await
         });
+        r.create(
+            "Create an interface (name, address, endpoint, per-interface backend, device limit, access patterns).",
+            |pool, p, i: InterfaceCreateInput| async move { interface_create(pool, p, i).await },
+        );
         r.update(
-            "Update an interface's client-facing settings (endpoint, DNS, routed networks, keepalive).",
+            "Update an interface's endpoint/DNS/routed-nets/keepalive, device limit, access patterns, or backend.",
             |pool, p, i: InterfaceUpdateInput| async move { interface_update(pool, p, i).await },
+        );
+        r.delete(
+            "Delete an interface (tears it down on its backend; devices cascade).",
+            |pool, p, i: InterfaceGetInput| async move { interface_delete(pool, p, i).await },
         );
         r.custom(
             "status",
@@ -109,13 +117,6 @@ fn build_registry(pool: PgPool) -> Registry<PgPool> {
             OnItem::Yes,
             "Revoke or restore a user's VPN access (devices retained, dropped from the backend).",
             |pool, p, i: UserRevokeInput| async move { user_revoke(pool, p, i).await },
-        );
-        r.custom(
-            "set_limit",
-            Risk::Mutating,
-            OnItem::Yes,
-            "Set a user's device limit (null = global default).",
-            |pool, p, i: UserLimitInput| async move { user_set_limit(pool, p, i).await },
         );
         r.delete("Delete a user and all their devices (admin).", |pool, p, i: UserIdInput| async move {
             user_delete(pool, p, i).await

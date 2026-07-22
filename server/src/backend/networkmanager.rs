@@ -111,6 +111,13 @@ impl WireguardBackend for NetworkManagerBackend {
         Ok(())
     }
 
+    async fn remove(&self, iface_name: &str) -> Result<()> {
+        let _ = nmcli(&["connection", "delete", iface_name]).await;
+        let path = std::path::Path::new(&self.keyfile_dir).join(format!("{iface_name}.nmconnection"));
+        let _ = tokio::fs::remove_file(&path).await;
+        Ok(())
+    }
+
     async fn status(&self, iface_name: &str) -> Result<Vec<PeerStatus>> {
         // NM creates a real kernel wg interface, so `wg show` still works.
         match Command::new("wg").args(["show", iface_name, "dump"]).output().await {

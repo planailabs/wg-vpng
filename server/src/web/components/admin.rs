@@ -1,5 +1,7 @@
-//! Admin page: manage every user's devices (everything a user can do, per
-//! user) plus access control — set device limits, revoke access, ban, delete.
+//! Admin Users page: per-user device management (create on any interface,
+//! regenerate, delete, show config) plus access control — revoke, ban, delete.
+//! Interface-level access is pattern-driven (see the Interfaces page); revoking
+//! or banning here is a global override.
 
 use dioxus::prelude::*;
 use dioxus_i18n::t;
@@ -8,8 +10,8 @@ use uuid::Uuid;
 
 use crate::web::dto::UserAdminView;
 use crate::web::server_fns::{
-    admin_create_device, admin_delete_user, admin_list_users, admin_set_banned,
-    admin_set_device_limit, admin_set_revoked, admin_user_devices, delete_peer, peer_config_text,
+    admin_create_device, admin_delete_user, admin_list_interfaces, admin_list_users,
+    admin_set_banned, admin_set_revoked, admin_user_devices, delete_peer, peer_config_text,
     regenerate_peer,
 };
 
@@ -20,7 +22,14 @@ pub fn Admin() -> Element {
         let _ = refresh();
         async move { admin_list_users().await }
     })?;
+    let ifaces = use_server_future(admin_list_interfaces)?;
     let mut error = use_signal(|| Option::<String>::None);
+
+    // (id, name) pairs for the per-user device-create interface picker.
+    let iface_opts: Vec<(Uuid, String)> = match &*ifaces.read() {
+        Some(Ok(l)) => l.iter().map(|i| (i.id, i.name.clone())).collect(),
+        _ => vec![],
+    };
 
     rsx! {
         div { class: "mb-8",
@@ -40,6 +49,7 @@ pub fn Admin() -> Element {
                         UserCard {
                             key: "{user.id}",
                             user: user.clone(),
+                            ifaces: iface_opts.clone(),
                             on_change: move |_| refresh.with_mut(|r| *r += 1),
                             on_error: move |e: String| error.set(Some(e)),
                         }
@@ -53,7 +63,12 @@ pub fn Admin() -> Element {
 }
 
 #[component]
-fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
+fn UserCard(
+    user: UserAdminView,
+    ifaces: Vec<(Uuid, String)>,
+    on_change: EventHandler<()>,
+    on_error: EventHandler<String>,
+) -> Element {
     let uid = user.id;
     let mut local = use_signal(|| 0u32);
     let devices = use_server_future(move || {
@@ -62,7 +77,7 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
     })?;
     let mut new_device = use_signal(String::new);
     let mut new_address = use_signal(String::new);
-    let mut limit_input = use_signal(|| user.device_limit.map(|l| l.to_string()).unwrap_or_default());
+    let mut sel_iface = use_signal(|| ifaces.first().map(|(id, _)| id.to_string()).unwrap_or_default());
 
     rsx! {
         Card { class: "p-4",
@@ -70,7 +85,7 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                 div { class: "flex-1 min-w-0",
                     div { class: "text-fg-strong font-medium", "{user.email}" }
                     div { class: "text-fg-muted text-xs",
-                        {t!("users-device-count", count: user.device_count, limit: user.effective_limit)}
+                        {t!("users-device-count-simple", count: user.device_count)}
                         if !user.name.is_empty() { " · {user.name}" }
                     }
                 }
@@ -79,7 +94,6 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                 if user.access_revoked { Badge { variant: BadgeVariant::Warn, {t!("badge-revoked")} } }
             }
 
-            // Access controls.
             div { class: "flex items-center gap-2 flex-wrap mt-3",
                 Button {
                     variant: ButtonVariant::Secondary,
@@ -111,61 +125,38 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                     },
                     {t!("action-delete-user")}
                 }
-                div { class: "flex items-center gap-1 ml-auto",
-                    label { class: "text-fg-muted text-xs", {t!("users-limit-label")} }
-                    input {
-                        class: "input w-16 text-sm",
-                        r#type: "number",
-                        placeholder: t!("users-limit-placeholder"),
-                        value: "{limit_input}",
-                        oninput: move |e| limit_input.set(e.value()),
-                    }
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        onclick: move |_| async move {
-                            let parsed = limit_input().trim().parse::<i32>().ok();
-                            match admin_set_device_limit(uid, parsed).await {
-                                Ok(()) => on_change.call(()),
-                                Err(e) => on_error.call(e.to_string()),
-                            }
-                        },
-                        {t!("action-set")}
-                    }
-                }
             }
 
-            // Devices.
             div { class: "mt-4 border-t border-line-soft pt-3",
-                div { class: "flex items-end gap-2 mb-2",
-                    input {
-                        class: "input flex-1 text-sm",
-                        placeholder: t!("users-new-device-placeholder"),
-                        value: "{new_device}",
-                        oninput: move |e| new_device.set(e.value()),
-                    }
-                    input {
-                        class: "input w-56 text-sm font-mono",
-                        placeholder: t!("users-new-device-subnet-placeholder"),
-                        value: "{new_address}",
-                        oninput: move |e| new_address.set(e.value()),
-                    }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        onclick: move |_| {
-                            let (name, addr) = (new_device(), new_address());
-                            async move {
-                                match admin_create_device(uid, name, addr).await {
-                                    Ok(_) => {
-                                        new_device.set(String::new());
-                                        new_address.set(String::new());
-                                        local += 1;
-                                        on_change.call(());
-                                    }
-                                    Err(e) => on_error.call(e.to_string()),
-                                }
+                if !ifaces.is_empty() {
+                    div { class: "flex items-end gap-2 mb-2 flex-wrap",
+                        select {
+                            class: "input text-sm w-40",
+                            value: "{sel_iface}",
+                            onchange: move |e| sel_iface.set(e.value()),
+                            for (iid, iname) in ifaces.clone() {
+                                option { value: "{iid}", "{iname}" }
                             }
-                        },
-                        {t!("action-add-device")}
+                        }
+                        input { class: "input flex-1 text-sm", placeholder: t!("users-new-device-placeholder"),
+                            value: "{new_device}", oninput: move |e| new_device.set(e.value()) }
+                        input { class: "input w-56 text-sm font-mono", placeholder: t!("users-new-device-subnet-placeholder"),
+                            value: "{new_address}", oninput: move |e| new_address.set(e.value()) }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            onclick: move |_| {
+                                let (name, addr) = (new_device(), new_address());
+                                let iid = sel_iface();
+                                async move {
+                                    let Ok(iid) = Uuid::parse_str(&iid) else { on_error.call("select an interface".into()); return; };
+                                    match admin_create_device(iid, uid, name, addr).await {
+                                        Ok(_) => { new_device.set(String::new()); new_address.set(String::new()); local += 1; on_change.call(()); }
+                                        Err(e) => on_error.call(e.to_string()),
+                                    }
+                                }
+                            },
+                            {t!("action-add-device")}
+                        }
                     }
                 }
 
@@ -175,9 +166,7 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                         div { class: "flex flex-col gap-1",
                             for d in list.clone() {
                                 div { key: "{d.id}", class: "flex items-center gap-2 text-sm",
-                                    span { class: "flex-1 min-w-0 truncate text-fg",
-                                        "{d.name} · {d.address}"
-                                    }
+                                    span { class: "flex-1 min-w-0 truncate text-fg", "{d.interface_name} · {d.name} · {d.address}" }
                                     DeviceButtons { id: d.id, on_change: move |_| { local += 1; on_change.call(()); }, on_error }
                                 }
                             }

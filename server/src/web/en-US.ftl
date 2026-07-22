@@ -51,7 +51,42 @@ users-new-device-subnet-placeholder = subnet (optional, e.g. fd00:2::/64)
 users-no-devices = No devices.
 users-loading-devices = Loading devices…
 
-## ── Interface ───────────────────────────────────────────────────
+## ── Devices / interfaces (multi-interface) ──────────────────────
+devices-no-interfaces = No interfaces are available to you yet.
+devices-quota-unlimited = { $used } devices
+users-device-count-simple = { $count } devices
+action-create = Create
+action-save = Save
+action-edit = Edit
+action-cancel = Cancel
+
+## ── Interfaces admin ────────────────────────────────────────────
+interfaces-title = Interfaces
+interfaces-subtitle = Create and manage WireGuard interfaces. Each has its own backend, per-user device limit, and access patterns.
+interfaces-create-heading = New interface
+interfaces-empty = No interfaces yet.
+interfaces-backend-error = Backend error:
+if-field-name = Name
+if-field-listen-port = Listen port
+if-field-address = Server address(es)
+if-field-endpoint = Endpoint
+if-field-dns = DNS
+if-field-allowed-ips = Routed networks
+if-field-keepalive = Keepalive
+if-field-device-limit = Device limit (per user)
+if-field-patterns = Access patterns
+if-patterns-help = One per line or space. * = everyone; literal emails allowed. Empty = nobody.
+if-field-backend = Backend
+if-backend-self-managed = Self-managed (wg + ip)
+if-backend-network-manager = NetworkManager
+if-backend-mikrotik = MikroTik (RouterOS)
+if-field-mikrotik-url = RouterOS URL (https://…)
+if-field-mikrotik-username = RouterOS username
+if-field-mikrotik-password = RouterOS password
+if-field-mikrotik-password-keep = RouterOS password (leave blank to keep)
+if-field-mikrotik-insecure = Accept self-signed certificate
+
+## ── Interface (legacy overview keys) ────────────────────────────
 interface-title = Interface
 interface-subtitle = The server-side WireGuard interface clients connect to.
 iface-name = Name

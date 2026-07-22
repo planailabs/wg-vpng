@@ -1,51 +1,39 @@
-//! "My VPN" page: a user's own peers with create / show-config / regenerate /
-//! delete. Regenerating replaces the peer's private key and re-renders config.
+//! "My devices" page: for each interface the user may access, their devices on
+//! it (create / show-config / regenerate / delete), bounded by the interface's
+//! per-user device limit.
 
 use dioxus::prelude::*;
 use dioxus_i18n::t;
 use plan_ai_design::{Alert, AlertVariant, Button, ButtonVariant, Card};
 use uuid::Uuid;
 
+use crate::web::dto::{InterfaceAccessView, PeerView};
 use crate::web::server_fns::{
-    create_my_peer, delete_peer, device_quota, my_peers, peer_config_text, regenerate_peer,
+    create_my_device, delete_peer, list_my_interfaces, my_devices, peer_config_text, regenerate_peer,
 };
 
 #[component]
 pub fn MyConfig() -> Element {
     let mut refresh = use_signal(|| 0u32);
-    let peers = use_server_future(move || {
+    let ifaces = use_server_future(move || {
         let _ = refresh();
-        async move { my_peers().await }
+        async move { list_my_interfaces().await }
     })?;
-    let quota = use_server_future(move || {
+    let devices = use_server_future(move || {
         let _ = refresh();
-        async move { device_quota().await }
+        async move { my_devices().await }
     })?;
-    let (used, limit) = match &*quota.read() {
-        Some(Ok(q)) => (q.used, q.limit),
-        _ => (0, 0),
-    };
-    let at_limit = used >= limit as i64;
-    let mut new_name = use_signal(String::new);
-    let mut shown = use_signal(|| Option::<(Uuid, String)>::None);
     let mut error = use_signal(|| Option::<String>::None);
+    let mut shown = use_signal(|| Option::<(Uuid, String)>::None);
 
-    let create = move |_| {
-        let name = new_name();
-        async move {
-            match create_my_peer(name).await {
-                Ok(p) => {
-                    new_name.set(String::new());
-                    // Immediately surface the fresh config.
-                    if let Ok(cfg) = peer_config_text(p.id).await {
-                        shown.set(Some((p.id, cfg)));
-                    }
-                    error.set(None);
-                    refresh += 1;
-                }
-                Err(e) => error.set(Some(e.to_string())),
-            }
-        }
+    let iface_list = match &*ifaces.read() {
+        Some(Ok(l)) => l.clone(),
+        Some(Err(e)) => return rsx! { Alert { variant: AlertVariant::Danger, "{e}" } },
+        None => return rsx! { p { class: "text-fg-muted", {t!("common-loading")} } },
+    };
+    let all_devices = match &*devices.read() {
+        Some(Ok(l)) => l.clone(),
+        _ => vec![],
     };
 
     rsx! {
@@ -58,54 +46,21 @@ pub fn MyConfig() -> Element {
             Alert { variant: AlertVariant::Danger, class: "mb-4", "{e}" }
         }
 
-        Card { class: "mb-6 p-4",
-            div { class: "flex items-end gap-3",
-                div { class: "flex-1",
-                    label { class: "label block text-sm text-fg-muted mb-1", {t!("devices-new-name-label")} }
-                    input {
-                        class: "input w-full",
-                        placeholder: t!("devices-new-name-placeholder"),
-                        value: "{new_name}",
-                        oninput: move |e| new_name.set(e.value()),
-                    }
-                }
-                Button {
-                    variant: ButtonVariant::Primary,
-                    disabled: at_limit,
-                    onclick: create,
-                    {t!("action-generate")}
-                }
-            }
-            p { class: "text-fg-muted text-xs mt-2",
-                {t!("devices-quota", used: used, limit: limit)}
-                if at_limit {
-                    span { class: "text-danger", " " {t!("devices-limit-reached")} }
-                }
-            }
+        if iface_list.is_empty() {
+            p { class: "text-fg-muted text-sm", {t!("devices-no-interfaces")} }
         }
 
-        match &*peers.read() {
-            Some(Ok(list)) if list.is_empty() => rsx! {
-                p { class: "text-fg-muted text-sm", {t!("devices-empty")} }
-            },
-            Some(Ok(list)) => rsx! {
-                div { class: "flex flex-col gap-3",
-                    for peer in list.clone() {
-                        PeerRow {
-                            key: "{peer.id}",
-                            id: peer.id,
-                            name: peer.name.clone(),
-                            address: peer.address.clone(),
-                            public_key: peer.public_key.clone(),
-                            on_change: move |_| { refresh += 1; },
-                            on_show: move |cfg: (Uuid, String)| shown.set(Some(cfg)),
-                            on_error: move |e: String| error.set(Some(e)),
-                        }
-                    }
+        div { class: "flex flex-col gap-6",
+            for iface in iface_list.clone() {
+                InterfaceSection {
+                    key: "{iface.id}",
+                    iface: iface.clone(),
+                    devices: all_devices.iter().filter(|d| d.interface_id == iface.id).cloned().collect::<Vec<_>>(),
+                    on_change: move |_| refresh.with_mut(|r| *r += 1),
+                    on_show: move |c: (Uuid, String)| shown.set(Some(c)),
+                    on_error: move |e: String| error.set(Some(e)),
                 }
-            },
-            Some(Err(e)) => rsx! { Alert { variant: AlertVariant::Danger, "{e}" } },
-            None => rsx! { p { class: "text-fg-muted", {t!("common-loading")} } },
+            }
         }
 
         if let Some((_, cfg)) = shown() {
@@ -137,23 +92,92 @@ pub fn MyConfig() -> Element {
 }
 
 #[component]
-fn PeerRow(
-    id: Uuid,
-    name: String,
-    address: String,
-    public_key: String,
+fn InterfaceSection(
+    iface: InterfaceAccessView,
+    devices: Vec<PeerView>,
     on_change: EventHandler<()>,
     on_show: EventHandler<(Uuid, String)>,
     on_error: EventHandler<String>,
 ) -> Element {
-    let short_key: String = public_key.chars().take(16).collect();
-    let display_name = if name.is_empty() { t!("device-unnamed") } else { name };
+    let iid = iface.id;
+    let mut new_name = use_signal(String::new);
+    let used = iface.used;
+    let at_limit = iface.limit.map(|l| used >= l as i64).unwrap_or(false);
+    let quota = match iface.limit {
+        Some(l) => t!("devices-quota", used: used, limit: l),
+        None => t!("devices-quota-unlimited", used: used),
+    };
 
     rsx! {
-        Card { class: "p-4 flex items-center gap-4",
+        Card { class: "p-4",
+            div { class: "flex items-center gap-3 mb-3",
+                div { class: "flex-1 min-w-0",
+                    div { class: "text-fg-strong font-medium", "{iface.name}" }
+                    div { class: "text-fg-muted text-xs", "{iface.endpoint} · {quota}" }
+                }
+                input {
+                    class: "input w-40 text-sm",
+                    placeholder: t!("devices-new-name-placeholder"),
+                    value: "{new_name}",
+                    oninput: move |e| new_name.set(e.value()),
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    disabled: at_limit,
+                    onclick: move |_| {
+                        let name = new_name();
+                        async move {
+                            match create_my_device(iid, name).await {
+                                Ok(p) => {
+                                    new_name.set(String::new());
+                                    if let Ok(cfg) = peer_config_text(p.id).await {
+                                        on_show.call((p.id, cfg));
+                                    }
+                                    on_change.call(());
+                                }
+                                Err(e) => on_error.call(e.to_string()),
+                            }
+                        }
+                    },
+                    {t!("action-generate")}
+                }
+            }
+
+            if devices.is_empty() {
+                p { class: "text-fg-muted text-xs", {t!("devices-empty")} }
+            }
+            div { class: "flex flex-col gap-2",
+                for peer in devices.clone() {
+                    DeviceRow {
+                        key: "{peer.id}",
+                        id: peer.id,
+                        name: peer.name.clone(),
+                        address: peer.address.clone(),
+                        on_change: move |_| on_change.call(()),
+                        on_show: move |c: (Uuid, String)| on_show.call(c),
+                        on_error: move |e: String| on_error.call(e),
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn DeviceRow(
+    id: Uuid,
+    name: String,
+    address: String,
+    on_change: EventHandler<()>,
+    on_show: EventHandler<(Uuid, String)>,
+    on_error: EventHandler<String>,
+) -> Element {
+    let display_name = if name.is_empty() { t!("device-unnamed") } else { name };
+    rsx! {
+        div { class: "flex items-center gap-3 border-t border-line-soft pt-2 first:border-0 first:pt-0",
             div { class: "flex-1 min-w-0",
-                div { class: "text-fg-strong font-medium", "{display_name}" }
-                div { class: "text-fg-muted text-xs", "{address} · {short_key}…" }
+                div { class: "text-fg-strong text-sm", "{display_name}" }
+                div { class: "text-fg-muted text-xs font-mono", "{address}" }
             }
             Button {
                 variant: ButtonVariant::Secondary,

@@ -1,9 +1,9 @@
 //! Server configuration, loaded once from `CONFIG_PATH` (default
-//! `./config.toml`) into a process-global.
+//! `./config.toml`). Interfaces (and their backends) are managed entirely in
+//! the admin UI, so config only carries the database, web, auth, and the app
+//! encryption key.
 
 use std::sync::OnceLock;
-
-use crate::backend::BackendConfig;
 
 static CONFIG: OnceLock<ServerConfig> = OnceLock::new();
 
@@ -14,7 +14,8 @@ pub struct ServerConfig {
     pub web: WebConfig,
     /// OIDC auth. Optional so `DEV_ONLY_NO_AUTH=1` debug runs need no IdP.
     pub auth: Option<plan_ai_auth::AuthConfig>,
-    pub wireguard: WireguardConfig,
+    /// App secrets (encryption key for stored credentials).
+    pub secrets: Option<SecretsConfig>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -38,56 +39,11 @@ fn default_web_port() -> u16 {
     8080
 }
 
-/// The VPN the app manages. On first boot a `wg_interfaces` row is seeded from
-/// these values (with a freshly generated keypair); afterwards the stored row
-/// is authoritative so keys stay stable across restarts.
 #[derive(Debug, serde::Deserialize)]
-pub struct WireguardConfig {
-    /// Which backend applies the config to the real world.
-    pub backend: BackendConfig,
-    #[serde(default = "default_iface_name")]
-    pub interface_name: String,
-    #[serde(default = "default_listen_port")]
-    pub listen_port: u16,
-    /// Server tunnel address(es) with prefix — one or more comma-separated
-    /// CIDRs. Defaults to dual-stack (IPv4 + IPv6 ULA); IPv6 is always on.
-    #[serde(default = "default_address")]
-    pub address: String,
-    /// Public `host:port` clients dial.
-    pub endpoint: String,
-    /// DNS pushed to clients (optional).
-    #[serde(default)]
-    pub dns: Option<String>,
-    /// Networks routed through the tunnel (client `AllowedIPs`).
-    #[serde(default = "default_allowed_ips")]
-    pub allowed_ips: String,
-    #[serde(default = "default_keepalive")]
-    pub keepalive: u16,
-    /// Default number of devices (configs) a user may create. Overridable
-    /// per-user by an admin.
-    #[serde(default = "default_device_limit")]
-    pub device_limit: i32,
-}
-
-fn default_device_limit() -> i32 {
-    5
-}
-
-fn default_iface_name() -> String {
-    "wg0".to_string()
-}
-fn default_listen_port() -> u16 {
-    51820
-}
-/// Dual-stack server address: IPv4 pool + IPv6 ULA pool. IPv6 is non-optional.
-fn default_address() -> String {
-    "10.8.0.1/24, fd00:8::1/64".to_string()
-}
-fn default_allowed_ips() -> String {
-    "10.8.0.0/24, fd00:8::/64".to_string()
-}
-fn default_keepalive() -> u16 {
-    25
+pub struct SecretsConfig {
+    /// 32-byte key (base64 or hex) encrypting credentials stored in the DB.
+    /// Generate with `openssl rand -base64 32`.
+    pub encryption_key: String,
 }
 
 pub fn load() -> &'static ServerConfig {

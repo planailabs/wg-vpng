@@ -2,7 +2,8 @@
 //! input)` and returns a serializable output or an `ApiError`.
 //!
 //! wg-vpng's API is an admin/automation surface: reads require any valid
-//! token, mutations require an admin token.
+//! token, mutations require an admin token. Interfaces are admin-managed, each
+//! with its own backend + pattern ACL + device limit.
 
 use plan_ai_api_mcp::{ApiError, Principal};
 use schemars::JsonSchema;
@@ -10,29 +11,117 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::backend::BackendConfig;
 use crate::store;
 
 fn internal(e: impl std::fmt::Display) -> ApiError {
     ApiError::internal(e.to_string())
 }
 
+/// Resolve an interface by id, or the sole interface when `id` is omitted.
 async fn resolve_interface(pool: &PgPool, id: Option<Uuid>) -> Result<store::Interface, ApiError> {
-    let iface = match id {
-        Some(id) => store::get_interface(pool, id).await.map_err(internal)?,
-        None => store::list_interfaces(pool)
+    match id {
+        Some(id) => store::get_interface(pool, id)
             .await
             .map_err(internal)?
-            .into_iter()
-            .next(),
-    };
-    iface.ok_or_else(|| ApiError::not_found("interface not found"))
+            .ok_or_else(|| ApiError::not_found("interface not found")),
+        None => {
+            let mut all = store::list_interfaces(pool).await.map_err(internal)?;
+            match all.len() {
+                1 => Ok(all.remove(0)),
+                0 => Err(ApiError::not_found("no interfaces configured")),
+                _ => Err(ApiError::bad_request("multiple interfaces; specify interface_id")),
+            }
+        }
+    }
 }
 
-/// Reconcile the backend after a mutation (best-effort; surfaced as an error).
 async fn sync(pool: &PgPool, interface_id: Uuid) -> Result<(), ApiError> {
-    store::sync_interface(pool, crate::server_state::backend(), interface_id)
-        .await
-        .map_err(internal)
+    store::sync_interface(pool, interface_id).await.map_err(internal)
+}
+
+async fn sync_all(pool: &PgPool) -> Result<(), ApiError> {
+    store::sync_all(pool).await.map_err(internal)
+}
+
+// ── Backend input ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BackendInput {
+    /// `self-managed`, `network-manager`, or `mikrotik`.
+    pub kind: String,
+    #[serde(default)]
+    pub mikrotik_url: Option<String>,
+    #[serde(default)]
+    pub mikrotik_username: Option<String>,
+    #[serde(default)]
+    pub mikrotik_password: Option<String>,
+    #[serde(default)]
+    pub mikrotik_insecure: bool,
+}
+
+impl BackendInput {
+    fn build(self) -> Result<BackendConfig, ApiError> {
+        if self.kind == "mikrotik" && !crate::crypto::has_key() {
+            return Err(ApiError::bad_request(
+                "storing MikroTik credentials requires [secrets] encryption_key in config",
+            ));
+        }
+        BackendConfig::from_parts(
+            &self.kind,
+            self.mikrotik_url,
+            self.mikrotik_username,
+            self.mikrotik_password,
+            self.mikrotik_insecure,
+        )
+        .map_err(ApiError::bad_request)
+    }
+}
+
+// ── Interface output ──────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct InterfaceOutput {
+    pub id: Uuid,
+    pub name: String,
+    pub listen_port: i32,
+    pub address: String,
+    pub public_key: String,
+    pub endpoint: String,
+    pub dns: Option<String>,
+    pub allowed_ips: String,
+    pub keepalive: i32,
+    pub device_limit: Option<i32>,
+    pub access_patterns: Vec<String>,
+    pub backend_kind: String,
+    /// MikroTik url (no password), when applicable.
+    pub mikrotik_url: Option<String>,
+    pub mikrotik_username: Option<String>,
+    pub mikrotik_insecure: Option<bool>,
+}
+
+fn iface_output(i: &store::Interface) -> InterfaceOutput {
+    let (url, user, insecure) = match i.backend.mikrotik_display() {
+        Some((u, n, s)) => (Some(u), Some(n), Some(s)),
+        None => (None, None, None),
+    };
+    InterfaceOutput {
+        id: i.id,
+        name: i.name.clone(),
+        listen_port: i.listen_port,
+        address: i.address.clone(),
+        public_key: i.public_key.clone(),
+        endpoint: i.endpoint.clone(),
+        dns: i.dns.clone(),
+        allowed_ips: i.allowed_ips.clone(),
+        keepalive: i.keepalive,
+        device_limit: i.device_limit,
+        access_patterns: i.access_patterns.clone(),
+        backend_kind: i.backend.kind().to_string(),
+        mikrotik_url: url,
+        mikrotik_username: user,
+        mikrotik_insecure: insecure,
+    }
 }
 
 // ── Interfaces ────────────────────────────────────────────────────────
@@ -44,13 +133,17 @@ pub async fn interface_list(
     pool: PgPool,
     _p: std::sync::Arc<Principal>,
     _i: InterfaceListInput,
-) -> Result<Vec<store::Interface>, ApiError> {
-    store::list_interfaces(&pool).await.map_err(internal)
+) -> Result<Vec<InterfaceOutput>, ApiError> {
+    Ok(store::list_interfaces(&pool)
+        .await
+        .map_err(internal)?
+        .iter()
+        .map(iface_output)
+        .collect())
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct InterfaceGetInput {
-    /// Interface id; omit to use the default (first) interface.
     #[serde(default)]
     pub id: Option<Uuid>,
 }
@@ -59,48 +152,132 @@ pub async fn interface_get(
     pool: PgPool,
     _p: std::sync::Arc<Principal>,
     i: InterfaceGetInput,
-) -> Result<store::Interface, ApiError> {
-    resolve_interface(&pool, i.id).await
+) -> Result<InterfaceOutput, ApiError> {
+    Ok(iface_output(&resolve_interface(&pool, i.id).await?))
+}
+
+fn default_listen_port() -> i32 {
+    51820
+}
+fn default_allowed_ips() -> String {
+    "10.8.0.0/24, fd00:8::/64".to_string()
+}
+fn default_keepalive() -> i32 {
+    25
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InterfaceCreateInput {
+    pub name: String,
+    #[serde(default = "default_listen_port")]
+    pub listen_port: i32,
+    /// Server tunnel address(es), comma-separated (dual-stack; IPv6 enforced).
+    pub address: String,
+    /// Public host:port clients dial.
+    pub endpoint: String,
+    #[serde(default)]
+    pub dns: Option<String>,
+    #[serde(default = "default_allowed_ips")]
+    pub allowed_ips: String,
+    #[serde(default = "default_keepalive")]
+    pub keepalive: i32,
+    /// Max devices per user on this interface; null = unlimited.
+    #[serde(default)]
+    pub device_limit: Option<i32>,
+    /// Access patterns (globs / literal emails; `*` = everyone). Empty = nobody.
+    #[serde(default)]
+    pub access_patterns: Vec<String>,
+    pub backend: BackendInput,
+}
+
+pub async fn interface_create(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: InterfaceCreateInput,
+) -> Result<InterfaceOutput, ApiError> {
+    p.require_admin()?;
+    let backend = i.backend.build()?;
+    let iface = store::create_interface(
+        &pool,
+        &i.name,
+        i.listen_port,
+        &i.address,
+        &i.endpoint,
+        i.dns.as_deref(),
+        &i.allowed_ips,
+        i.keepalive,
+        i.device_limit,
+        &i.access_patterns,
+        backend,
+    )
+    .await
+    .map_err(internal)?;
+    sync(&pool, iface.id).await?;
+    Ok(iface_output(&iface))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct InterfaceUpdateInput {
-    /// Interface id; omit to update the default (first) interface.
     #[serde(default)]
     pub id: Option<Uuid>,
-    /// Public host:port clients dial.
     #[serde(default)]
     pub endpoint: Option<String>,
-    /// DNS pushed to clients; empty string clears it.
+    /// Empty string clears DNS.
     #[serde(default)]
     pub dns: Option<String>,
-    /// Networks routed through the tunnel (client AllowedIPs).
     #[serde(default)]
     pub allowed_ips: Option<String>,
-    /// PersistentKeepalive seconds.
     #[serde(default)]
     pub keepalive: Option<i32>,
+    #[serde(default)]
+    pub device_limit: Option<i32>,
+    /// Replace the access patterns (real-time grant/revoke on sync).
+    #[serde(default)]
+    pub access_patterns: Option<Vec<String>>,
+    /// Replace the backend.
+    #[serde(default)]
+    pub backend: Option<BackendInput>,
 }
 
 pub async fn interface_update(
     pool: PgPool,
     p: std::sync::Arc<Principal>,
     i: InterfaceUpdateInput,
-) -> Result<store::Interface, ApiError> {
+) -> Result<InterfaceOutput, ApiError> {
     p.require_admin()?;
     let iface = resolve_interface(&pool, i.id).await?;
-    // Empty dns string clears; absent leaves unchanged.
     let dns = i.dns.as_ref().map(|s| if s.is_empty() { None } else { Some(s.as_str()) });
-    store::update_interface(
+    let backend = match i.backend {
+        Some(b) => Some(b.build()?),
+        None => None,
+    };
+    let updated = store::update_interface(
         &pool,
         iface.id,
         i.endpoint.as_deref(),
         dns,
         i.allowed_ips.as_deref(),
         i.keepalive,
+        i.device_limit.map(Some),
+        i.access_patterns.as_deref(),
+        backend,
     )
     .await
-    .map_err(internal)
+    .map_err(internal)?;
+    // Patterns/backend may have changed access — re-sync now (real-time).
+    sync(&pool, updated.id).await?;
+    Ok(iface_output(&updated))
+}
+
+pub async fn interface_delete(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: InterfaceGetInput,
+) -> Result<DeleteOutput, ApiError> {
+    p.require_admin()?;
+    let iface = resolve_interface(&pool, i.id).await?;
+    store::delete_interface(&pool, iface.id).await.map_err(internal)?;
+    Ok(DeleteOutput { deleted: true })
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -116,11 +293,9 @@ pub async fn interface_status(
     i: InterfaceGetInput,
 ) -> Result<Vec<StatusOutput>, ApiError> {
     let iface = resolve_interface(&pool, i.id).await?;
-    let statuses = crate::server_state::backend()
-        .status(&iface.name)
+    Ok(store::interface_status(&pool, iface.id)
         .await
-        .map_err(internal)?;
-    Ok(statuses
+        .map_err(internal)?
         .into_iter()
         .map(|s| StatusOutput {
             public_key: s.public_key,
@@ -134,7 +309,6 @@ pub async fn interface_status(
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PeerListInput {
-    /// Filter to one interface; omit for the default interface.
     #[serde(default)]
     pub interface_id: Option<Uuid>,
 }
@@ -166,18 +340,15 @@ pub async fn peer_get(
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PeerCreateInput {
-    /// Interface to attach to; omit for the default interface.
     #[serde(default)]
     pub interface_id: Option<Uuid>,
     /// Owner's email (upserted as a user). Omit for an unowned peer.
     #[serde(default)]
     pub user_email: Option<String>,
-    /// Display label.
     #[serde(default)]
     pub name: Option<String>,
-    /// Explicit address/subnet CIDR(s) to assign (admin). Any prefix length —
-    /// use this to grant a device a whole routed subnet (e.g. an IPv6 `/64`).
-    /// Omit to auto-allocate a host address in each interface subnet.
+    /// Explicit address/subnet CIDR(s) (admin). Any prefix — grants a device a
+    /// whole routed subnet (e.g. an IPv6 `/64`). Omit to auto-allocate.
     #[serde(default)]
     pub address: Option<String>,
 }
@@ -190,7 +361,7 @@ pub async fn peer_create(
     p.require_admin()?;
     let iface = resolve_interface(&pool, i.interface_id).await?;
     let user_id = match &i.user_email {
-        Some(email) => Some(upsert_user(&pool, email).await?),
+        Some(email) => Some(store::upsert_user_by_email(&pool, email).await.map_err(internal)?),
         None => None,
     };
     let name = i.name.unwrap_or_default();
@@ -206,7 +377,6 @@ pub async fn peer_create(
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PeerUpdateInput {
     pub id: Uuid,
-    /// New device name.
     pub name: String,
 }
 
@@ -267,7 +437,6 @@ pub struct PeerConfigInput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ConfigOutput {
-    /// The rendered WireGuard client `.conf`.
     pub config: String,
 }
 
@@ -299,14 +468,7 @@ pub struct UserOutput {
     pub is_admin: bool,
     pub banned: bool,
     pub access_revoked: bool,
-    pub device_limit: Option<i32>,
     pub device_count: i64,
-}
-
-async fn sync_all(pool: &PgPool) -> Result<(), ApiError> {
-    crate::store::sync_all(pool, crate::server_state::backend())
-        .await
-        .map_err(internal)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -318,8 +480,9 @@ pub async fn user_list(
     _i: UserListInput,
 ) -> Result<Vec<UserOutput>, ApiError> {
     p.require_admin()?;
-    let rows = crate::store::list_users_with_counts(&pool).await.map_err(internal)?;
-    Ok(rows
+    Ok(store::list_users_with_counts(&pool)
+        .await
+        .map_err(internal)?
         .into_iter()
         .map(|r| UserOutput {
             id: r.user.id,
@@ -328,18 +491,21 @@ pub async fn user_list(
             is_admin: r.user.is_admin,
             banned: r.user.banned,
             access_revoked: r.user.access_revoked,
-            device_limit: r.user.device_limit,
             device_count: r.device_count,
         })
         .collect())
 }
 
 async fn user_output(pool: &PgPool, id: Uuid) -> Result<UserOutput, ApiError> {
-    let user = crate::store::get_user(pool, id)
+    let user = store::get_user(pool, id)
         .await
         .map_err(internal)?
         .ok_or_else(|| ApiError::not_found("user not found"))?;
-    let device_count = crate::store::count_user_devices(pool, id).await.map_err(internal)?;
+    let device_count: i64 = sqlx::query_scalar("SELECT count(*) FROM wg_peers WHERE user_id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(internal)?;
     Ok(UserOutput {
         id: user.id,
         email: user.email,
@@ -347,7 +513,6 @@ async fn user_output(pool: &PgPool, id: Uuid) -> Result<UserOutput, ApiError> {
         is_admin: user.is_admin,
         banned: user.banned,
         access_revoked: user.access_revoked,
-        device_limit: user.device_limit,
         device_count,
     })
 }
@@ -377,7 +542,7 @@ pub async fn user_create(
     i: UserCreateInput,
 ) -> Result<UserOutput, ApiError> {
     p.require_admin()?;
-    let id = crate::store::upsert_user_by_email(&pool, &i.email).await.map_err(internal)?;
+    let id = store::upsert_user_by_email(&pool, &i.email).await.map_err(internal)?;
     user_output(&pool, id).await
 }
 
@@ -393,7 +558,7 @@ pub async fn user_ban(
     i: UserBanInput,
 ) -> Result<DeleteOutput, ApiError> {
     p.require_admin()?;
-    crate::store::set_banned(&pool, i.id, i.banned).await.map_err(internal)?;
+    store::set_banned(&pool, i.id, i.banned).await.map_err(internal)?;
     sync_all(&pool).await?;
     Ok(DeleteOutput { deleted: i.banned })
 }
@@ -410,27 +575,9 @@ pub async fn user_revoke(
     i: UserRevokeInput,
 ) -> Result<DeleteOutput, ApiError> {
     p.require_admin()?;
-    crate::store::set_access_revoked(&pool, i.id, i.revoked).await.map_err(internal)?;
+    store::set_access_revoked(&pool, i.id, i.revoked).await.map_err(internal)?;
     sync_all(&pool).await?;
     Ok(DeleteOutput { deleted: i.revoked })
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct UserLimitInput {
-    pub id: Uuid,
-    /// New per-user device limit; omit/null to fall back to the global default.
-    #[serde(default)]
-    pub limit: Option<i32>,
-}
-
-pub async fn user_set_limit(
-    pool: PgPool,
-    p: std::sync::Arc<Principal>,
-    i: UserLimitInput,
-) -> Result<DeleteOutput, ApiError> {
-    p.require_admin()?;
-    crate::store::set_device_limit(&pool, i.id, i.limit).await.map_err(internal)?;
-    Ok(DeleteOutput { deleted: true })
 }
 
 pub async fn user_delete(
@@ -439,18 +586,7 @@ pub async fn user_delete(
     i: UserIdInput,
 ) -> Result<DeleteOutput, ApiError> {
     p.require_admin()?;
-    crate::store::delete_user(&pool, i.id).await.map_err(internal)?;
+    store::delete_user(&pool, i.id).await.map_err(internal)?;
     sync_all(&pool).await?;
     Ok(DeleteOutput { deleted: true })
-}
-
-async fn upsert_user(pool: &PgPool, email: &str) -> Result<Uuid, ApiError> {
-    sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO users (email) VALUES ($1) \
-         ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email RETURNING id",
-    )
-    .bind(email)
-    .fetch_one(pool)
-    .await
-    .map_err(internal)
 }

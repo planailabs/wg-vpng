@@ -107,6 +107,19 @@ impl Client {
         Ok(())
     }
 
+    /// Delete the interface (and its peers) by name. No-op if absent.
+    pub async fn remove_interface(&self, name: &str) -> Result<()> {
+        // Remove peers first.
+        for p in self.list_peers(name).await? {
+            let _ = self.remove_peer(name, &p.public_key).await;
+        }
+        let existing = self.send(self.http.get(self.url(&format!("interface/wireguard?name={name}")))).await?;
+        if let Some(id) = first_id(&existing) {
+            self.send(self.http.delete(self.url(&format!("interface/wireguard/{id}")))).await?;
+        }
+        Ok(())
+    }
+
     pub async fn list_peers(&self, interface: &str) -> Result<Vec<Peer>> {
         let v = self.send(self.http.get(self.url(&format!("interface/wireguard/peers?interface={interface}")))).await?;
         Ok(serde_json::from_value(v).unwrap_or_default())

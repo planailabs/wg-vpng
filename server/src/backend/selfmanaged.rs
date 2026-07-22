@@ -108,6 +108,12 @@ impl WireguardBackend for SelfManagedBackend {
         Ok(())
     }
 
+    async fn remove(&self, iface_name: &str) -> Result<()> {
+        // Best-effort: ignore "does not exist".
+        let _ = run("ip", &["link", "del", "dev", iface_name]).await;
+        Ok(())
+    }
+
     async fn status(&self, iface_name: &str) -> Result<Vec<PeerStatus>> {
         let dump = match run("wg", &["show", iface_name, "dump"]).await {
             Ok(d) => d,

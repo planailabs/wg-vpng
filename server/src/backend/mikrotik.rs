@@ -44,6 +44,11 @@ impl WireguardBackend for MikrotikBackend {
         Ok(())
     }
 
+    async fn remove(&self, iface_name: &str) -> Result<()> {
+        self.client.remove_interface(iface_name).await?;
+        Ok(())
+    }
+
     async fn status(&self, iface_name: &str) -> Result<Vec<PeerStatus>> {
         let peers = self.client.list_peers(iface_name).await?;
         Ok(peers

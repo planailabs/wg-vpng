@@ -53,7 +53,7 @@ in
   integration-self-managed = mk {
     inherit pkgs;
     name = "self-managed";
-    wireguardBackend = "self-managed";
+    backend = { kind = "self-managed"; };
     node = { ... }: { boot.kernelModules = [ "wireguard" ]; };
     verifyPy = kernelVerify "pass";
   };
@@ -65,7 +65,7 @@ in
   integration-networkmanager = mk {
     inherit pkgs;
     name = "networkmanager";
-    wireguardBackend = "network-manager";
+    backend = { kind = "network-manager"; };
     node =
       { pkgs, lib, ... }:
       {
@@ -94,14 +94,16 @@ in
   integration-mikrotik = mk {
     inherit pkgs;
     name = "mikrotik";
-    wireguardBackend = {
-      mikrotik = {
-        url = "http://127.0.0.1:8081";
-        username = "admin";
-        password = "testpass";
-        insecure = true;
-      };
+    backend = {
+      kind = "mikrotik";
+      mikrotik_url = "http://127.0.0.1:8081";
+      mikrotik_username = "admin";
+      mikrotik_password = "testpass";
+      mikrotik_insecure = true;
     };
+    # Storing the RouterOS password needs an app encryption key (hex 32 bytes).
+    settingsExtra.secrets.encryption_key =
+      "0000000000000000000000000000000000000000000000000000000000000000";
     node =
       { pkgs, ... }:
       {

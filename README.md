@@ -8,20 +8,27 @@ is applied through a pluggable backend.
 ## Features
 
 - **OIDC login** via [`plan-ai-auth`] (same as mac-mgmt / web-agency).
-- **Per-user devices** — each user generates multiple device configs (show,
-  copy, regenerate, delete), bounded by a configurable per-user device limit.
-- **Admin console** (`/admin`) — do everything a user can, for any user, plus
-  set device limits, revoke VPN access, ban (blocks login + drops devices), and
-  delete users. Revoking/banning immediately drops the user's peers from the
-  backend.
-- **Dual-stack** — IPv6 is always on (non-optional): the interface is IPv4 +
-  IPv6 by default and every device is allocated an address in each subnet.
-  Admins can also assign a device a whole routed subnet of any prefix (e.g. an
-  IPv6 `/64`) for site-to-site / gateway devices.
-- **Pluggable backends** (`[wireguard] backend = …`):
+- **Multiple interfaces, admin-managed** — create/edit/delete WireGuard
+  interfaces entirely in the admin UI (`/interfaces`); nothing about interfaces
+  lives in config. Each interface has its **own backend**, per-user device
+  limit, and access policy.
+- **Pattern-based access** — each interface carries access patterns (globs like
+  `*@corp.com`, literal emails, or `*` for everyone). A user may use an
+  interface iff their email matches. Editing patterns re-syncs immediately, so
+  access is granted/revoked in real time (devices dropped from the backend).
+- **Per-user devices** — each user generates device configs on any interface
+  they can access (show, copy, regenerate, delete), bounded by that interface's
+  device limit.
+- **Admin console** (`/admin`) — manage any user's devices, revoke VPN access,
+  ban (blocks login + drops devices), and delete users.
+- **Dual-stack** — IPv6 is always on (non-optional): interfaces are IPv4 + IPv6
+  and every device gets an address in each subnet. Admins can also assign a
+  device a whole routed subnet of any prefix (e.g. an IPv6 `/64`).
+- **Per-interface pluggable backends** (chosen when creating the interface):
   - `self-managed` — a kernel WireGuard interface driven by `wg` + `ip`.
   - `network-manager` — an `nmcli` keyfile connection profile.
-  - `mikrotik` — RouterOS 7 REST API (via the `mikrotik-api` crate).
+  - `mikrotik` — RouterOS 7 REST API (via the `mikrotik-api` crate); the
+    password is encrypted at rest with `[secrets] encryption_key`.
 - **Dioxus fullstack** UI using the shared `plan-ai-design` system; error and
   login pages rendered with `plan-ai-html`.
 - **REST + MCP API** via [`plan-ai-api-mcp`] at `/api/v1/*` and `/mcp`
@@ -57,8 +64,15 @@ nix build .#checks.x86_64-linux.integration -L   # NixOS VM end-to-end test
 nix build .#wg-vpng-server                   # the production build
 ```
 
-Copy `server/config.example.toml` to `config.toml`. In debug builds,
-`DEV_ONLY_NO_AUTH=1` bypasses OIDC (everyone is `dev@localhost`, admin).
+Copy `server/config.example.toml` to `config.toml` (database, web port,
+`[secrets] encryption_key`, and optional `[auth]`). In debug builds,
+`DEV_ONLY_NO_AUTH=1` bypasses OIDC (everyone is `dev@localhost`, admin). Create
+interfaces from the admin UI once running.
+
+CI (GitLab, `nix-image` runner): `.gitlab-ci.yml` warms the xzar cache
+(`xzar.sh`), runs `cargo test` + the per-backend VM tests (`nix flake check`),
+and pushes the OCI image (`docker-push.sh`). `nix build .#docker` builds the
+image; `nix build .#image` builds the NixOS-in-Incus CI runner.
 
 ## Deploy (NixOS)
 
@@ -69,15 +83,12 @@ Copy `server/config.example.toml` to `config.toml`. In debug builds,
     enable = true;
     openFirewall = true;
     settings = {
-      wireguard = {
-        backend = "self-managed";
-        address = "10.8.0.1/24";
-        endpoint = "vpn.example.com:51820";
-      };
+      secrets.encryption_key = "…"; # openssl rand -base64 32
       auth = { /* … OIDC providers … */ };
     };
     environmentFile = "/run/secrets/wg-vpng.env";
   };
+  # Create interfaces (and open their per-interface UDP ports) from the admin UI.
 }
 ```
 

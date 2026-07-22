@@ -65,10 +65,15 @@ pub trait WireguardBackend: Send + Sync {
     /// Best-effort runtime status (handshakes/endpoints). Empty is acceptable
     /// for backends that don't expose it.
     async fn status(&self, iface_name: &str) -> Result<Vec<PeerStatus>>;
+
+    /// Tear the interface down (on interface deletion). Best-effort.
+    async fn remove(&self, iface_name: &str) -> Result<()>;
 }
 
-/// Backend selection, mirrored from `[wireguard] backend = "..."` in config.
-#[derive(Debug, Clone, serde::Deserialize)]
+/// The backend that applies a single interface. Configured per interface and
+/// stored (serialized) on the interface row. Secrets (the MikroTik password)
+/// are encrypted at rest via [`BackendConfig::encrypt_secrets`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum BackendConfig {
     /// Manage a kernel WireGuard interface locally with `wg` + `ip`.
@@ -79,6 +84,8 @@ pub enum BackendConfig {
     Mikrotik {
         url: String,
         username: String,
+        /// Encrypted at rest (see `encrypt_secrets`); plaintext only in memory
+        /// after `decrypt_secrets`.
         password: String,
         #[serde(default)]
         insecure: bool,
@@ -94,5 +101,67 @@ impl BackendConfig {
                 Box::new(MikrotikBackend::new(url, username, password, *insecure)?)
             }
         })
+    }
+
+    /// Short kind tag for display / API (`self-managed`, `network-manager`,
+    /// `mikrotik`).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            BackendConfig::SelfManaged => "self-managed",
+            BackendConfig::NetworkManager => "network-manager",
+            BackendConfig::Mikrotik { .. } => "mikrotik",
+        }
+    }
+
+    /// Build from UI/API parts. `mikrotik_*` are required only for the mikrotik
+    /// kind.
+    pub fn from_parts(
+        kind: &str,
+        mikrotik_url: Option<String>,
+        mikrotik_username: Option<String>,
+        mikrotik_password: Option<String>,
+        mikrotik_insecure: bool,
+    ) -> std::result::Result<Self, String> {
+        match kind {
+            "self-managed" => Ok(BackendConfig::SelfManaged),
+            "network-manager" => Ok(BackendConfig::NetworkManager),
+            "mikrotik" => Ok(BackendConfig::Mikrotik {
+                url: mikrotik_url.filter(|s| !s.is_empty()).ok_or("mikrotik url required")?,
+                username: mikrotik_username.unwrap_or_default(),
+                password: mikrotik_password.unwrap_or_default(),
+                insecure: mikrotik_insecure,
+            }),
+            other => Err(format!("unknown backend kind: {other}")),
+        }
+    }
+
+    /// Encrypt secrets in place before storing.
+    pub fn encrypt_secrets(&mut self) {
+        if let BackendConfig::Mikrotik { password, .. } = self {
+            if !password.is_empty() {
+                *password = crate::crypto::encrypt(password);
+            }
+        }
+    }
+
+    /// Decrypt secrets in place after loading (before `build`).
+    pub fn decrypt_secrets(&mut self) -> anyhow::Result<()> {
+        if let BackendConfig::Mikrotik { password, .. } = self {
+            if !password.is_empty() {
+                *password = crate::crypto::decrypt(password)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// MikroTik connection params for display (url, username, insecure) — never
+    /// the password.
+    pub fn mikrotik_display(&self) -> Option<(String, String, bool)> {
+        match self {
+            BackendConfig::Mikrotik { url, username, insecure, .. } => {
+                Some((url.clone(), username.clone(), *insecure))
+            }
+            _ => None,
+        }
     }
 }

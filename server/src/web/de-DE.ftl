@@ -50,7 +50,42 @@ users-new-device-subnet-placeholder = Subnetz (optional, z. B. fd00:2::/64)
 users-no-devices = Keine Geräte.
 users-loading-devices = Geräte werden geladen…
 
-## ── Schnittstelle ───────────────────────────────────────────────
+## ── Geräte / Schnittstellen (mehrere) ───────────────────────────
+devices-no-interfaces = Für dich sind noch keine Schnittstellen verfügbar.
+devices-quota-unlimited = { $used } Geräte
+users-device-count-simple = { $count } Geräte
+action-create = Erstellen
+action-save = Speichern
+action-edit = Bearbeiten
+action-cancel = Abbrechen
+
+## ── Schnittstellen-Verwaltung ───────────────────────────────────
+interfaces-title = Schnittstellen
+interfaces-subtitle = WireGuard-Schnittstellen erstellen und verwalten. Jede hat ihr eigenes Backend, ein Gerätelimit pro Benutzer und Zugriffsmuster.
+interfaces-create-heading = Neue Schnittstelle
+interfaces-empty = Noch keine Schnittstellen.
+interfaces-backend-error = Backend-Fehler:
+if-field-name = Name
+if-field-listen-port = Listen-Port
+if-field-address = Server-Adresse(n)
+if-field-endpoint = Endpunkt
+if-field-dns = DNS
+if-field-allowed-ips = Geroutete Netzwerke
+if-field-keepalive = Keepalive
+if-field-device-limit = Gerätelimit (pro Benutzer)
+if-field-patterns = Zugriffsmuster
+if-patterns-help = Eins pro Zeile oder Leerzeichen. * = alle; literale E-Mails erlaubt. Leer = niemand.
+if-field-backend = Backend
+if-backend-self-managed = Selbstverwaltet (wg + ip)
+if-backend-network-manager = NetworkManager
+if-backend-mikrotik = MikroTik (RouterOS)
+if-field-mikrotik-url = RouterOS-URL (https://…)
+if-field-mikrotik-username = RouterOS-Benutzername
+if-field-mikrotik-password = RouterOS-Passwort
+if-field-mikrotik-password-keep = RouterOS-Passwort (leer lassen zum Beibehalten)
+if-field-mikrotik-insecure = Selbstsigniertes Zertifikat akzeptieren
+
+## ── Schnittstelle (alte Übersichts-Keys) ────────────────────────
 interface-title = Schnittstelle
 interface-subtitle = Die serverseitige WireGuard-Schnittstelle, mit der sich Clients verbinden.
 iface-name = Name

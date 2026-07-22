@@ -36,6 +36,7 @@ server = [
     "dep:base64",
     "dep:ipnet",
     "dep:sha2",
+    "dep:aes-gcm",
     "dep:plan-ai-html",
     "dep:plan-ai-api-mcp",
     "dep:mikrotik-api",
@@ -74,6 +75,7 @@ rand = { version = "0.8", optional = true }
 base64 = { version = "0.22", optional = true }
 ipnet = { version = "2", optional = true }
 sha2 = { version = "0.10", optional = true }
+aes-gcm = { version = "0.10", optional = true }
 plan-ai-html = { path = "../common/plan-ai-html", optional = true }
 plan-ai-api-mcp = { path = "../common/plan-ai-api-mcp", optional = true }
 mikrotik-api = { path = "../mikrotik-api", optional = true }

@@ -14,10 +14,45 @@ pub struct CurrentUser {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PeerView {
     pub id: Uuid,
+    pub interface_id: Uuid,
+    pub interface_name: String,
     pub name: String,
     pub address: String,
     pub public_key: String,
     pub owner_email: Option<String>,
+}
+
+/// An interface a user can access, with their usage on it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceAccessView {
+    pub id: Uuid,
+    pub name: String,
+    pub endpoint: String,
+    pub used: i64,
+    /// None = unlimited.
+    pub limit: Option<i32>,
+}
+
+/// Full interface view for the admin console.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceAdminView {
+    pub id: Uuid,
+    pub name: String,
+    pub listen_port: i32,
+    pub address: String,
+    pub public_key: String,
+    pub endpoint: String,
+    pub dns: Option<String>,
+    pub allowed_ips: String,
+    pub keepalive: i32,
+    pub device_limit: Option<i32>,
+    pub access_patterns: Vec<String>,
+    pub backend_kind: String,
+    pub mikrotik_url: Option<String>,
+    pub mikrotik_username: Option<String>,
+    pub mikrotik_insecure: bool,
+    /// Populated when the last backend sync/status failed (surfaced in the UI).
+    pub backend_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,27 +63,5 @@ pub struct UserAdminView {
     pub is_admin: bool,
     pub banned: bool,
     pub access_revoked: bool,
-    pub device_limit: Option<i32>,
     pub device_count: i64,
-    /// Effective limit (override or global default), for display.
-    pub effective_limit: i32,
-}
-
-/// Current user's device usage against their limit.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DeviceQuota {
-    pub used: i64,
-    pub limit: i32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InterfaceView {
-    pub id: Uuid,
-    pub name: String,
-    pub address: String,
-    pub endpoint: String,
-    pub public_key: String,
-    pub listen_port: i32,
-    pub dns: Option<String>,
-    pub allowed_ips: String,
 }

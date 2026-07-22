@@ -22,10 +22,25 @@ The release package builds with `dx build --fullstack` and the patched
 
 - **Submodules**: `common` and `design` (`../common`, `../design`). Consumed as
   path deps; don't vendor their code here.
+- **Interfaces are admin-managed** (DB rows; no interface config in
+  config.toml). Each row carries its **own backend** (`BackendConfig`, a JSONB
+  column), a per-user `device_limit`, and `access_patterns`. `[wireguard]` no
+  longer exists in config — only `[database]`, `[web]`, `[secrets]`, `[auth]`.
 - **Backends** live in `server/src/backend/`. Add one by implementing
-  `WireguardBackend::{apply, status}` (full-state reconcile) and a
-  `BackendConfig` variant. Keep request/command construction in pure functions
-  with unit tests (see `mikrotik-api`, `selfmanaged::render_server_config`).
+  `WireguardBackend::{apply, status, remove}` (full-state reconcile) and a
+  `BackendConfig` variant + `from_parts`. Backends are built per-interface at
+  sync time (`store::sync_interface`), not globally. Keep request/command
+  construction in pure functions with unit tests.
+- **Access is pattern-only** (`store::email_matches`): a user can use an
+  interface iff their email matches its `access_patterns` (`*` = all; literal
+  emails allowed; empty = nobody). No manual grants. `list_active_peers` filters
+  by this, so editing patterns + a sync grants/revokes in real time. Any peer
+  mutation, pattern edit, or ban/revoke triggers a sync.
+- **Secrets** (MikroTik password) are encrypted at rest (`server/src/crypto.rs`,
+  AES-256-GCM) with the key from `[secrets] encryption_key`. Never store or log
+  a credential in plaintext; encrypt via `BackendConfig::encrypt_secrets`.
+- **Interface bring-up failures** are persisted to `wg_interfaces.last_error`
+  by `sync_interface` and surfaced in the admin UI.
 - **API** = one `plan-ai-api-mcp` `Registry` in `server/src/api_mcp/`; handlers
   are shared by REST + MCP. Mutations require an admin token.
 - **Schema changes** go through a new `server/migrations/NNNN_*.sql` — never

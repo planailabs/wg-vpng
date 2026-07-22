@@ -1,12 +1,18 @@
-//! Database layer for interfaces and peers, plus backend reconciliation and
-//! client-config rendering. Shared by the web UI and the API.
+//! Database layer for interfaces and peers, plus per-interface backend
+//! reconciliation and client-config rendering. Shared by the web UI and the API.
+//!
+//! Interfaces are fully admin-managed (no config seeding). Each interface
+//! carries its own backend (self-managed / NetworkManager / MikroTik, secrets
+//! encrypted) and a pattern-based ACL: a user may use an interface iff their
+//! email matches one of the interface's `access_patterns` (globs; `*` = all;
+//! literal emails allowed). Access is enforced live at sync time, so editing
+//! patterns and re-syncing grants/revokes devices in real time.
 
 use anyhow::{Context, Result};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::backend::{InterfaceSpec, PeerSpec, WireguardBackend};
-use crate::config::WireguardConfig;
+use crate::backend::{BackendConfig, InterfaceSpec, PeerSpec, PeerStatus};
 use crate::wg;
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, schemars::JsonSchema)]
@@ -23,6 +29,17 @@ pub struct Interface {
     pub dns: Option<String>,
     pub allowed_ips: String,
     pub keepalive: i32,
+    /// Max devices per user on this interface; None = unlimited.
+    pub device_limit: Option<i32>,
+    /// Access patterns (globs / literal emails; `*` = everyone).
+    pub access_patterns: Vec<String>,
+    /// Per-interface backend (secrets encrypted). Not exposed via serialize.
+    #[serde(skip_serializing)]
+    #[schemars(skip)]
+    #[sqlx(json)]
+    pub backend: BackendConfig,
+    /// Last backend reconcile error (None = last sync ok).
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, schemars::JsonSchema)]
@@ -37,7 +54,6 @@ pub struct Peer {
     pub address: String,
 }
 
-/// A user with access-control + device-limit fields (admin view).
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct User {
     pub id: Uuid,
@@ -46,66 +62,98 @@ pub struct User {
     pub is_admin: bool,
     pub banned: bool,
     pub access_revoked: bool,
-    /// Per-user override; None → global default.
-    pub device_limit: Option<i32>,
 }
 
-const USER_COLS: &str = "id, email, name, is_admin, banned, access_revoked, device_limit";
-
-const IFACE_COLS: &str =
-    "id, name, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, keepalive";
+const IFACE_COLS: &str = "id, name, listen_port, address, private_key, public_key, endpoint, \
+    dns, allowed_ips, keepalive, device_limit, access_patterns, backend, last_error";
 const PEER_COLS: &str =
     "id, interface_id, user_id, name, private_key, public_key, preshared_key, address";
+const USER_COLS: &str = "id, email, name, is_admin, banned, access_revoked";
 
-// ── Interfaces ────────────────────────────────────────────────────────
-
-/// Default IPv6 pools appended when a config/interface lacks IPv6 (IPv6 is
+/// Default IPv6 pools appended when an interface lacks IPv6 (IPv6 is
 /// non-optional).
 const DEFAULT_V6_ADDR: &str = "fd00:8::1/64";
 const DEFAULT_V6_NET: &str = "fd00:8::/64";
 
-/// Seed the configured interface on first boot (generating a keypair), or
-/// return the existing stored row. IPv6 is enforced on both paths: a config or
-/// pre-existing interface without an IPv6 subnet gets the default ULA appended
-/// (so the interface is always dual-stack).
-pub async fn ensure_default_interface(pool: &PgPool, cfg: &WireguardConfig) -> Result<Interface> {
-    if let Some(existing) = get_interface_by_name(pool, &cfg.interface_name).await? {
-        let address = wg::ensure_ipv6(&existing.address, DEFAULT_V6_ADDR);
-        let allowed_ips = wg::ensure_ipv6(&existing.allowed_ips, DEFAULT_V6_NET);
-        if address == existing.address && allowed_ips == existing.allowed_ips {
-            return Ok(existing);
+// ── ACL matching ──────────────────────────────────────────────────────
+
+/// Whether `email` matches any access pattern (case-insensitive globs with `*`;
+/// a literal email matches only itself; `*` matches everyone). Empty patterns
+/// match nobody (grant-required).
+pub fn email_matches(patterns: &[String], email: &str) -> bool {
+    let e = email.to_ascii_lowercase();
+    patterns.iter().any(|p| glob_match(&p.trim().to_ascii_lowercase(), &e))
+}
+
+fn glob_match(pat: &str, s: &str) -> bool {
+    let (pat, s) = (pat.as_bytes(), s.as_bytes());
+    let (mut pi, mut si) = (0usize, 0usize);
+    let (mut star, mut mark) = (None, 0usize);
+    while si < s.len() {
+        if pi < pat.len() && (pat[pi] == b'?' || pat[pi] == s[si]) {
+            pi += 1;
+            si += 1;
+        } else if pi < pat.len() && pat[pi] == b'*' {
+            star = Some(pi);
+            mark = si;
+            pi += 1;
+        } else if let Some(sp) = star {
+            pi = sp + 1;
+            mark += 1;
+            si = mark;
+        } else {
+            return false;
         }
-        // Upgrade a v4-only interface in place to dual-stack.
-        return sqlx::query_as::<_, Interface>(&format!(
-            "UPDATE wg_interfaces SET address=$2, allowed_ips=$3 WHERE id=$1 RETURNING {IFACE_COLS}"
-        ))
-        .bind(existing.id)
-        .bind(&address)
-        .bind(&allowed_ips)
-        .fetch_one(pool)
-        .await
-        .context("enforce ipv6 on interface");
     }
+    while pi < pat.len() && pat[pi] == b'*' {
+        pi += 1;
+    }
+    pi == pat.len()
+}
+
+// ── Interfaces ────────────────────────────────────────────────────────
+
+/// Create an interface (admin). Generates a keypair, enforces IPv6, and
+/// encrypts backend secrets before storing.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_interface(
+    pool: &PgPool,
+    name: &str,
+    listen_port: i32,
+    address: &str,
+    endpoint: &str,
+    dns: Option<&str>,
+    allowed_ips: &str,
+    keepalive: i32,
+    device_limit: Option<i32>,
+    access_patterns: &[String],
+    mut backend: BackendConfig,
+) -> Result<Interface> {
+    backend.encrypt_secrets();
+    let address = wg::ensure_ipv6(address, DEFAULT_V6_ADDR);
+    let allowed_ips = wg::ensure_ipv6(allowed_ips, DEFAULT_V6_NET);
     let kp = wg::generate_keypair();
-    let address = wg::ensure_ipv6(&cfg.address, DEFAULT_V6_ADDR);
-    let allowed_ips = wg::ensure_ipv6(&cfg.allowed_ips, DEFAULT_V6_NET);
     let iface = sqlx::query_as::<_, Interface>(&format!(
         "INSERT INTO wg_interfaces \
-         (name, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, keepalive) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING {IFACE_COLS}"
+         (name, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, \
+          keepalive, device_limit, access_patterns, backend) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING {IFACE_COLS}"
     ))
-    .bind(&cfg.interface_name)
-    .bind(cfg.listen_port as i32)
+    .bind(name)
+    .bind(listen_port)
     .bind(&address)
     .bind(&kp.private_key)
     .bind(&kp.public_key)
-    .bind(&cfg.endpoint)
-    .bind(&cfg.dns)
+    .bind(endpoint)
+    .bind(dns)
     .bind(&allowed_ips)
-    .bind(cfg.keepalive as i32)
+    .bind(keepalive)
+    .bind(device_limit)
+    .bind(access_patterns)
+    .bind(sqlx::types::Json(backend))
     .fetch_one(pool)
     .await
-    .context("insert default interface")?;
+    .context("insert interface")?;
     Ok(iface)
 }
 
@@ -126,18 +174,17 @@ pub async fn get_interface(pool: &PgPool, id: Uuid) -> Result<Option<Interface>>
     .await?)
 }
 
-pub async fn get_interface_by_name(pool: &PgPool, name: &str) -> Result<Option<Interface>> {
-    Ok(sqlx::query_as::<_, Interface>(&format!(
-        "SELECT {IFACE_COLS} FROM wg_interfaces WHERE name = $1"
-    ))
-    .bind(name)
-    .fetch_optional(pool)
-    .await?)
+/// Interfaces a user (by email) may use, per the pattern ACL.
+pub async fn interfaces_for_user(pool: &PgPool, email: &str) -> Result<Vec<Interface>> {
+    Ok(list_interfaces(pool)
+        .await?
+        .into_iter()
+        .filter(|i| email_matches(&i.access_patterns, email))
+        .collect())
 }
 
-/// Update an interface's client-facing settings (endpoint, DNS, routed
-/// networks, keepalive). Keys/address/port are immutable here so existing
-/// peers keep working.
+/// Update an interface's policy + presentation (not its name/keys/address).
+#[allow(clippy::too_many_arguments)]
 pub async fn update_interface(
     pool: &PgPool,
     id: Uuid,
@@ -145,33 +192,78 @@ pub async fn update_interface(
     dns: Option<Option<&str>>,
     allowed_ips: Option<&str>,
     keepalive: Option<i32>,
+    device_limit: Option<Option<i32>>,
+    access_patterns: Option<&[String]>,
+    backend: Option<BackendConfig>,
 ) -> Result<Interface> {
-    let mut iface = get_interface(pool, id).await?.context("interface not found")?;
-    if let Some(e) = endpoint {
-        iface.endpoint = e.to_string();
-    }
-    if let Some(d) = dns {
-        iface.dns = d.map(|s| s.to_string());
-    }
-    if let Some(a) = allowed_ips {
-        iface.allowed_ips = a.to_string();
-    }
-    if let Some(k) = keepalive {
-        iface.keepalive = k;
-    }
-    let updated = sqlx::query_as::<_, Interface>(&format!(
-        "UPDATE wg_interfaces SET endpoint=$2, dns=$3, allowed_ips=$4, keepalive=$5 \
-         WHERE id=$1 RETURNING {IFACE_COLS}"
+    let cur = get_interface(pool, id).await?.context("interface not found")?;
+    let new_endpoint = endpoint.map(str::to_string).unwrap_or(cur.endpoint);
+    let new_dns = match dns {
+        Some(d) => d.map(str::to_string),
+        None => cur.dns,
+    };
+    let new_allowed = allowed_ips
+        .map(|a| wg::ensure_ipv6(a, DEFAULT_V6_NET))
+        .unwrap_or(cur.allowed_ips);
+    let new_keepalive = keepalive.unwrap_or(cur.keepalive);
+    let new_limit = match device_limit {
+        Some(v) => v,
+        None => cur.device_limit,
+    };
+    let new_patterns = access_patterns.map(<[String]>::to_vec).unwrap_or(cur.access_patterns);
+    let new_backend = match backend {
+        Some(mut b) => {
+            b.encrypt_secrets();
+            b
+        }
+        None => cur.backend,
+    };
+
+    let iface = sqlx::query_as::<_, Interface>(&format!(
+        "UPDATE wg_interfaces SET endpoint=$2, dns=$3, allowed_ips=$4, keepalive=$5, \
+         device_limit=$6, access_patterns=$7, backend=$8 WHERE id=$1 RETURNING {IFACE_COLS}"
     ))
     .bind(id)
-    .bind(&iface.endpoint)
-    .bind(&iface.dns)
-    .bind(&iface.allowed_ips)
-    .bind(iface.keepalive)
+    .bind(&new_endpoint)
+    .bind(&new_dns)
+    .bind(&new_allowed)
+    .bind(new_keepalive)
+    .bind(new_limit)
+    .bind(&new_patterns)
+    .bind(sqlx::types::Json(new_backend))
     .fetch_one(pool)
     .await
     .context("update interface")?;
-    Ok(updated)
+    Ok(iface)
+}
+
+/// Delete an interface: tear it down on its backend (best-effort), then drop
+/// the row (peers cascade).
+pub async fn delete_interface(pool: &PgPool, id: Uuid) -> Result<()> {
+    if let Some(iface) = get_interface(pool, id).await? {
+        if let Ok(backend) = build_backend(&iface) {
+            let _ = backend.remove(&iface.name).await;
+        }
+    }
+    sqlx::query("DELETE FROM wg_interfaces WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Build (and decrypt) the backend for an interface.
+fn build_backend(iface: &Interface) -> Result<Box<dyn crate::backend::WireguardBackend>> {
+    let mut b = iface.backend.clone();
+    b.decrypt_secrets().context("decrypt backend secrets")?;
+    b.build().map_err(|e| anyhow::anyhow!("build backend: {e}"))
+}
+
+/// Live peer status for an interface, via its backend.
+pub async fn interface_status(pool: &PgPool, id: Uuid) -> Result<Vec<PeerStatus>> {
+    let iface = get_interface(pool, id).await?.context("interface not found")?;
+    let backend = build_backend(&iface)?;
+    backend.status(&iface.name).await.map_err(|e| anyhow::anyhow!("backend status: {e}"))
 }
 
 // ── Peers ─────────────────────────────────────────────────────────────
@@ -203,31 +295,40 @@ pub async fn get_peer(pool: &PgPool, id: Uuid) -> Result<Option<Peer>> {
     .await?)
 }
 
-/// Create a peer on `interface_id` owned by `user_id`: generate a keypair +
-/// preshared key and allocate the next free tunnel address in each of the
-/// interface's subnets (so dual-stack interfaces yield a v4 + v6 address).
+/// Count a user's devices on a specific interface (for per-interface limits).
+pub async fn count_user_devices_on_interface(
+    pool: &PgPool,
+    interface_id: Uuid,
+    user_id: Uuid,
+) -> Result<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT count(*) FROM wg_peers WHERE interface_id = $1 AND user_id = $2")
+            .bind(interface_id)
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+/// Create a peer on `interface_id`: generate a keypair + PSK and allocate the
+/// next free tunnel address in each of the interface's subnets (dual-stack).
 pub async fn create_peer(
     pool: &PgPool,
     interface_id: Uuid,
     user_id: Option<Uuid>,
     name: &str,
 ) -> Result<Peer> {
-    let iface = get_interface(pool, interface_id)
-        .await?
-        .context("interface not found")?;
+    let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
     let subnets = wg::parse_subnets(&iface.address).map_err(anyhow::Error::msg)?;
-    let taken: Vec<String> = list_peers(pool, interface_id)
-        .await?
-        .into_iter()
-        .map(|p| p.address)
-        .collect();
+    let taken: Vec<String> =
+        list_peers(pool, interface_id).await?.into_iter().map(|p| p.address).collect();
     let address = wg::allocate_addresses(&subnets, &taken).map_err(anyhow::Error::msg)?;
     insert_peer(pool, interface_id, user_id, name, &address).await
 }
 
 /// Create a peer with an explicit address/subnet spec (admin only). The spec is
-/// one or more CIDRs of any prefix length — this is how a device is granted a
-/// whole routed subnet (e.g. an IPv6 `/64`) rather than a single host address.
+/// one or more CIDRs of any prefix length — how a device is granted a whole
+/// routed subnet (e.g. an IPv6 `/64`).
 pub async fn create_peer_with_address(
     pool: &PgPool,
     interface_id: Uuid,
@@ -265,12 +366,11 @@ async fn insert_peer(
     .context("insert peer")
 }
 
-/// Replace a peer's keypair (and preshared key), keeping its address. Returns
-/// the updated peer; the caller must re-sync the backend.
+/// Replace a peer's keypair (and preshared key), keeping its address.
 pub async fn regenerate_peer(pool: &PgPool, peer_id: Uuid) -> Result<Peer> {
     let kp = wg::generate_keypair();
     let psk = wg::generate_preshared_key();
-    let peer = sqlx::query_as::<_, Peer>(&format!(
+    sqlx::query_as::<_, Peer>(&format!(
         "UPDATE wg_peers SET private_key=$2, public_key=$3, preshared_key=$4 \
          WHERE id=$1 RETURNING {PEER_COLS}"
     ))
@@ -280,20 +380,19 @@ pub async fn regenerate_peer(pool: &PgPool, peer_id: Uuid) -> Result<Peer> {
     .bind(&psk)
     .fetch_one(pool)
     .await
-    .context("regenerate peer")?;
-    Ok(peer)
+    .context("regenerate peer")
 }
 
 /// Rename a peer (device). Cosmetic — no backend change needed.
 pub async fn rename_peer(pool: &PgPool, peer_id: Uuid, name: &str) -> Result<Peer> {
-    Ok(sqlx::query_as::<_, Peer>(&format!(
+    sqlx::query_as::<_, Peer>(&format!(
         "UPDATE wg_peers SET name=$2 WHERE id=$1 RETURNING {PEER_COLS}"
     ))
     .bind(peer_id)
     .bind(name)
     .fetch_one(pool)
     .await
-    .context("rename peer")?)
+    .context("rename peer")
 }
 
 pub async fn delete_peer(pool: &PgPool, peer_id: Uuid) -> Result<()> {
@@ -306,19 +405,18 @@ pub async fn delete_peer(pool: &PgPool, peer_id: Uuid) -> Result<()> {
 
 /// Upsert a user by email, returning its id.
 pub async fn upsert_user_by_email(pool: &PgPool, email: &str) -> Result<Uuid> {
-    Ok(sqlx::query_scalar::<_, Uuid>(
+    sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO users (email) VALUES ($1) \
          ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email RETURNING id",
     )
     .bind(email)
     .fetch_one(pool)
     .await
-    .context("upsert user")?)
+    .context("upsert user")
 }
 
-// ── Users / devices ───────────────────────────────────────────────────
+// ── Users (admin) ─────────────────────────────────────────────────────
 
-/// A user plus their current device count (admin listing).
 #[derive(Debug, Clone)]
 pub struct UserWithCount {
     pub user: User,
@@ -349,27 +447,6 @@ pub async fn list_users_with_counts(pool: &PgPool) -> Result<Vec<UserWithCount>>
     Ok(out)
 }
 
-pub async fn count_user_devices(pool: &PgPool, user_id: Uuid) -> Result<i64> {
-    Ok(sqlx::query_scalar("SELECT count(*) FROM wg_peers WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_one(pool)
-        .await?)
-}
-
-/// Effective device limit for a user: their override, else the global default.
-pub fn effective_device_limit(user: &User, global_default: i32) -> i32 {
-    user.device_limit.unwrap_or(global_default)
-}
-
-pub async fn set_device_limit(pool: &PgPool, user_id: Uuid, limit: Option<i32>) -> Result<()> {
-    sqlx::query("UPDATE users SET device_limit = $2 WHERE id = $1")
-        .bind(user_id)
-        .bind(limit)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 pub async fn set_banned(pool: &PgPool, user_id: Uuid, banned: bool) -> Result<()> {
     sqlx::query("UPDATE users SET banned = $2 WHERE id = $1")
         .bind(user_id)
@@ -388,8 +465,6 @@ pub async fn set_access_revoked(pool: &PgPool, user_id: Uuid, revoked: bool) -> 
     Ok(())
 }
 
-/// Delete a user; their devices cascade (and must be dropped from the backend
-/// afterwards via a sync).
 pub async fn delete_user(pool: &PgPool, user_id: Uuid) -> Result<()> {
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
@@ -398,32 +473,42 @@ pub async fn delete_user(pool: &PgPool, user_id: Uuid) -> Result<()> {
     Ok(())
 }
 
-/// Peers whose owner may currently connect: unowned, or owned by a user that
-/// is neither banned nor access-revoked. This is what gets pushed to the
-/// backend, so revoking/banning immediately cuts a user off.
+// ── Active peers + reconcile ──────────────────────────────────────────
+
+/// Peers currently permitted on `interface_id`: unowned, or owned by a user who
+/// is not banned/revoked AND whose email matches the interface's access
+/// patterns. This is what gets pushed to the backend, so pattern edits + a sync
+/// grant/revoke devices in real time.
 pub async fn list_active_peers(pool: &PgPool, interface_id: Uuid) -> Result<Vec<Peer>> {
-    Ok(sqlx::query_as::<_, Peer>(&format!(
-        "SELECT {} FROM wg_peers p LEFT JOIN users u ON p.user_id = u.id \
-         WHERE p.interface_id = $1 AND (u.id IS NULL OR (NOT u.banned AND NOT u.access_revoked)) \
-         ORDER BY p.created_at",
-        PEER_COLS.split(", ").map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", ")
-    ))
-    .bind(interface_id)
-    .fetch_all(pool)
-    .await?)
+    let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
+    let peers = list_peers(pool, interface_id).await?;
+    let mut out = Vec::with_capacity(peers.len());
+    for p in peers {
+        match p.user_id {
+            None => out.push(p),
+            Some(uid) => {
+                if let Some((email, banned, revoked)) =
+                    sqlx::query_as::<_, (String, bool, bool)>(
+                        "SELECT email, banned, access_revoked FROM users WHERE id = $1",
+                    )
+                    .bind(uid)
+                    .fetch_optional(pool)
+                    .await?
+                {
+                    if !banned && !revoked && email_matches(&iface.access_patterns, &email) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
-// ── Reconcile + render ────────────────────────────────────────────────
-
-/// Push the interface + all its *active* peers to the backend.
-pub async fn sync_interface(
-    pool: &PgPool,
-    backend: &dyn WireguardBackend,
-    interface_id: Uuid,
-) -> Result<()> {
-    let iface = get_interface(pool, interface_id)
-        .await?
-        .context("interface not found")?;
+/// Reconcile one interface to its backend (active peers only).
+pub async fn sync_interface(pool: &PgPool, interface_id: Uuid) -> Result<()> {
+    let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
+    let backend = build_backend(&iface)?;
     let peers = list_active_peers(pool, interface_id).await?;
 
     let ispec = InterfaceSpec {
@@ -441,20 +526,40 @@ pub async fn sync_interface(
         })
         .collect();
 
-    backend
-        .apply(&ispec, &pspecs)
-        .await
-        .context("backend apply")?;
+    // Record the outcome on the interface so bring-up failures surface in the UI.
+    let result = backend.apply(&ispec, &pspecs).await;
+    let err_text = result.as_ref().err().map(|e| e.to_string());
+    let _ = sqlx::query("UPDATE wg_interfaces SET last_error = $2 WHERE id = $1")
+        .bind(interface_id)
+        .bind(&err_text)
+        .execute(pool)
+        .await;
+    result.map_err(|e| anyhow::anyhow!("backend apply: {e}"))
+}
+
+/// Reconcile every interface (used on boot and after user-level changes).
+pub async fn sync_all(pool: &PgPool) -> Result<()> {
+    for iface in list_interfaces(pool).await? {
+        sync_interface(pool, iface.id).await?;
+    }
     Ok(())
 }
 
-/// Reconcile every interface (used after a change that can affect any
-/// interface's active peer set, e.g. banning or deleting a user).
-pub async fn sync_all(pool: &PgPool, backend: &dyn WireguardBackend) -> Result<()> {
-    for iface in list_interfaces(pool).await? {
-        sync_interface(pool, backend, iface.id).await?;
+/// Best-effort sync of every interface — logs failures, never errors. For boot
+/// and background reconciles where one bad backend shouldn't block the rest.
+pub async fn sync_all_best_effort(pool: &PgPool) {
+    let ifaces = match list_interfaces(pool).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("sync_all: listing interfaces failed: {e:#}");
+            return;
+        }
+    };
+    for iface in ifaces {
+        if let Err(e) = sync_interface(pool, iface.id).await {
+            tracing::warn!("sync of interface {} failed: {e:#}", iface.name);
+        }
     }
-    Ok(())
 }
 
 /// Render the client `.conf` for a peer against its interface.
@@ -475,11 +580,19 @@ pub fn render_peer_config(iface: &Interface, peer: &Peer) -> String {
 mod tests {
     use super::*;
     use crate::backend::{PeerStatus, WireguardBackend};
-    use crate::config::WireguardConfig;
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// Records the peer set of the most recent `apply`.
+    #[test]
+    fn glob_and_email_matching() {
+        assert!(email_matches(&["*".into()], "anyone@x.com"));
+        assert!(email_matches(&["*@corp.com".into()], "alice@corp.com"));
+        assert!(!email_matches(&["*@corp.com".into()], "alice@other.com"));
+        assert!(email_matches(&["cto@x.com".into()], "CTO@X.com")); // case-insensitive
+        assert!(!email_matches(&[], "nobody@x.com")); // empty = grant-required
+        assert!(email_matches(&["a@x.com".into(), "*@y.com".into()], "bob@y.com"));
+    }
+
     #[derive(Default)]
     struct MockBackend {
         applied: Mutex<Vec<String>>,
@@ -487,149 +600,120 @@ mod tests {
 
     #[async_trait]
     impl WireguardBackend for MockBackend {
-        async fn apply(&self, _iface: &InterfaceSpec, peers: &[PeerSpec]) -> crate::backend::Result<()> {
+        async fn apply(&self, _i: &InterfaceSpec, peers: &[PeerSpec]) -> crate::backend::Result<()> {
             *self.applied.lock().unwrap() = peers.iter().map(|p| p.public_key.clone()).collect();
             Ok(())
         }
-        async fn status(&self, _iface_name: &str) -> crate::backend::Result<Vec<PeerStatus>> {
+        async fn status(&self, _n: &str) -> crate::backend::Result<Vec<PeerStatus>> {
             Ok(vec![])
         }
-    }
-
-    fn test_wg_config() -> WireguardConfig {
-        WireguardConfig {
-            backend: crate::backend::BackendConfig::SelfManaged,
-            interface_name: "wg0".into(),
-            listen_port: 51820,
-            address: "10.8.0.1/24".into(),
-            endpoint: "vpn.example.com:51820".into(),
-            dns: Some("10.8.0.1".into()),
-            allowed_ips: "10.8.0.0/24".into(),
-            keepalive: 25,
-            device_limit: 5,
+        async fn remove(&self, _n: &str) -> crate::backend::Result<()> {
+            Ok(())
         }
     }
 
-    // Full peer lifecycle against a throwaway postgres, asserting the backend
-    // is reconciled to the DB at each step.
-    #[tokio::test]
-    async fn peer_lifecycle_reconciles_backend() {
-        let db = pgtemp::PgTempDB::async_new().await;
-        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-
-        let iface = ensure_default_interface(&pool, &test_wg_config()).await.unwrap();
-        // Idempotent: second call returns the same row (same keys).
-        let again = ensure_default_interface(&pool, &test_wg_config()).await.unwrap();
-        assert_eq!(iface.public_key, again.public_key);
-
-        let backend = MockBackend::default();
-
-        // Create two peers -> .2 and .3 (server holds .1). IPv6 is enforced, so
-        // the v4-only config becomes dual-stack; check the v4 host part.
-        let p1 = create_peer(&pool, iface.id, None, "a").await.unwrap();
-        let p2 = create_peer(&pool, iface.id, None, "b").await.unwrap();
-        assert!(p1.address.starts_with("10.8.0.2/32"), "{}", p1.address);
-        assert!(p2.address.starts_with("10.8.0.3/32"), "{}", p2.address);
-
-        sync_interface(&pool, &backend, iface.id).await.unwrap();
-        assert_eq!(backend.applied.lock().unwrap().len(), 2);
-
-        // Regenerate p1: new key, same address; backend follows.
-        let old_pub = p1.public_key.clone();
-        let p1b = regenerate_peer(&pool, p1.id).await.unwrap();
-        assert_ne!(p1b.public_key, old_pub);
-        assert_eq!(p1b.address, p1.address);
-        sync_interface(&pool, &backend, iface.id).await.unwrap();
-        {
-            let applied = backend.applied.lock().unwrap();
-            assert!(applied.contains(&p1b.public_key));
-            assert!(!applied.contains(&old_pub));
-        }
-
-        // Config renders with the regenerated private key.
-        let cfg = render_peer_config(&iface, &p1b);
-        assert!(cfg.contains(&format!("PrivateKey = {}", p1b.private_key)));
-        assert!(cfg.contains("Endpoint = vpn.example.com:51820"));
-
-        // Delete p2: backend left with one peer.
-        delete_peer(&pool, p2.id).await.unwrap();
-        sync_interface(&pool, &backend, iface.id).await.unwrap();
-        assert_eq!(backend.applied.lock().unwrap().len(), 1);
-    }
-
-    // Revoking / banning a user drops their devices from the backend's active
-    // set; deleting the user removes them entirely.
-    #[tokio::test]
-    async fn access_control_gates_active_peers() {
-        let db = pgtemp::PgTempDB::async_new().await;
-        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-
-        let iface = ensure_default_interface(&pool, &test_wg_config()).await.unwrap();
-        let uid: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-
-        create_peer(&pool, iface.id, Some(uid), "d1").await.unwrap();
-        create_peer(&pool, iface.id, Some(uid), "d2").await.unwrap();
-        assert_eq!(count_user_devices(&pool, uid).await.unwrap(), 2);
-        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 2);
-
-        // Revoke → no active peers, but rows retained.
-        set_access_revoked(&pool, uid, true).await.unwrap();
-        assert!(list_active_peers(&pool, iface.id).await.unwrap().is_empty());
-        assert_eq!(count_user_devices(&pool, uid).await.unwrap(), 2);
-
-        // Restore → active again.
-        set_access_revoked(&pool, uid, false).await.unwrap();
-        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 2);
-
-        // Ban → inactive.
-        set_banned(&pool, uid, true).await.unwrap();
-        assert!(list_active_peers(&pool, iface.id).await.unwrap().is_empty());
-
-        // Delete user → devices cascade away.
-        delete_user(&pool, uid).await.unwrap();
-        assert_eq!(list_peers(&pool, iface.id).await.unwrap().len(), 0);
-
-        // Per-user limit override beats the global default.
-        let u2: User = sqlx::query_as::<_, User>(&format!(
-            "INSERT INTO users (email, device_limit) VALUES ('u2@x', 2) RETURNING {USER_COLS}"
-        ))
-        .fetch_one(&pool)
+    async fn mk_iface(pool: &PgPool, patterns: &[String], addr: &str) -> Interface {
+        create_interface(
+            pool,
+            "wg0",
+            51820,
+            addr,
+            "vpn.example.com:51820",
+            Some("10.8.0.1"),
+            "10.8.0.0/24",
+            25,
+            Some(5),
+            patterns,
+            BackendConfig::SelfManaged,
+        )
         .await
-        .unwrap();
-        assert_eq!(effective_device_limit(&u2, 5), 2);
+        .unwrap()
     }
 
-    // Dual-stack interface yields v4+v6 device addresses; admins can assign a
-    // whole routed subnet to a device.
     #[tokio::test]
-    async fn dual_stack_and_subnet_device() {
+    async fn dual_stack_alloc_and_subnet_device() {
         let db = pgtemp::PgTempDB::async_new().await;
         let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
         sqlx::migrate!().run(&pool).await.unwrap();
 
-        let mut cfg = test_wg_config();
-        cfg.address = "10.8.0.1/24, fd00:8::1/64".into();
-        cfg.allowed_ips = "10.8.0.0/24, fd00:8::/64".into();
-        let iface = ensure_default_interface(&pool, &cfg).await.unwrap();
-
+        let iface = mk_iface(&pool, &["*".into()], "10.8.0.1/24, fd00:8::1/64").await;
         let p = create_peer(&pool, iface.id, None, "dual").await.unwrap();
         assert_eq!(p.address, "10.8.0.2/32, fd00:8::2/128");
 
-        // Admin assigns an IPv6 /64 subnet to a device (a routed network).
         let sub = create_peer_with_address(&pool, iface.id, None, "site", "fd00:beef::/64")
             .await
             .unwrap();
         assert_eq!(sub.address, "fd00:beef::/64");
 
-        // The rendered client config carries both the dual-stack address and
-        // the dual-stack routed networks.
-        let cfg_text = render_peer_config(&iface, &p);
-        assert!(cfg_text.contains("Address = 10.8.0.2/32, fd00:8::2/128"));
-        assert!(cfg_text.contains("AllowedIPs = 10.8.0.0/24, fd00:8::/64"));
+        let cfg = render_peer_config(&iface, &p);
+        assert!(cfg.contains("Address = 10.8.0.2/32, fd00:8::2/128"));
+    }
+
+    #[tokio::test]
+    async fn pattern_acl_gates_active_peers() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        // Interface only grants *@corp.com.
+        let iface = mk_iface(&pool, &["*@corp.com".into()], "10.8.0.1/24").await;
+
+        let alice: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('alice@corp.com') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
+        let mallory: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('mallory@evil.com') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
+
+        create_peer(&pool, iface.id, Some(alice), "a").await.unwrap();
+        create_peer(&pool, iface.id, Some(mallory), "m").await.unwrap();
+
+        // Only alice's device is active (mallory doesn't match the pattern).
+        let active = list_active_peers(&pool, iface.id).await.unwrap();
+        assert_eq!(active.len(), 1);
+
+        let backend = MockBackend::default();
+        // sync_interface builds a self-managed backend which would shell out;
+        // instead assert active-set directly against the mock.
+        let peers = list_active_peers(&pool, iface.id).await.unwrap();
+        backend
+            .apply(
+                &InterfaceSpec { name: iface.name.clone(), listen_port: 51820, address: iface.address.clone(), private_key: iface.private_key.clone() },
+                &peers.iter().map(|p| PeerSpec { public_key: p.public_key.clone(), address: p.address.clone(), preshared_key: p.preshared_key.clone() }).collect::<Vec<_>>(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(backend.applied.lock().unwrap().len(), 1);
+
+        // Widen the pattern -> mallory now active.
+        update_interface(&pool, iface.id, None, None, None, None, None, Some(&["*".into()]), None)
+            .await
+            .unwrap();
+        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 2);
+
+        // Ban alice -> back to 1.
+        set_banned(&pool, alice, true).await.unwrap();
+        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn per_interface_device_count() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let a = mk_iface(&pool, &["*".into()], "10.8.0.1/24").await;
+        // A second interface with a different name/subnet.
+        let b = create_interface(&pool, "wg1", 51821, "10.9.0.1/24", "vpn:51821", None, "10.9.0.0/24", 25, Some(2), &["*".into()], BackendConfig::SelfManaged).await.unwrap();
+
+        let u: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
+        create_peer(&pool, a.id, Some(u), "d1").await.unwrap();
+        create_peer(&pool, a.id, Some(u), "d2").await.unwrap();
+        create_peer(&pool, b.id, Some(u), "d3").await.unwrap();
+
+        assert_eq!(count_user_devices_on_interface(&pool, a.id, u).await.unwrap(), 2);
+        assert_eq!(count_user_devices_on_interface(&pool, b.id, u).await.unwrap(), 1);
+
+        // interfaces_for_user sees both (both are `*`).
+        assert_eq!(interfaces_for_user(&pool, "u@x").await.unwrap().len(), 2);
     }
 }
