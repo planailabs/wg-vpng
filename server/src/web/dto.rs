@@ -39,6 +39,8 @@ pub struct NewDeviceView {
 pub struct InterfaceAccessView {
     pub id: Uuid,
     pub name: String,
+    /// Human-friendly label; empty falls back to `name`.
+    pub display_name: String,
     pub endpoint: String,
     pub used: i64,
     /// None = unlimited.
@@ -50,6 +52,7 @@ pub struct InterfaceAccessView {
 pub struct InterfaceAdminView {
     pub id: Uuid,
     pub name: String,
+    pub display_name: String,
     pub listen_port: i32,
     pub address: String,
     pub public_key: String,

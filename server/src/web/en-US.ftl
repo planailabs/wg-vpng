@@ -71,7 +71,9 @@ interfaces-subtitle = Create and manage WireGuard interfaces. Each has its own b
 interfaces-create-heading = New interface
 interfaces-empty = No interfaces yet.
 interfaces-backend-error = Backend error:
-if-field-name = Name
+if-field-name = Interface id (e.g. wg0)
+if-field-display-name = Display name
+if-field-display-name-placeholder = e.g. Office VPN
 if-field-listen-port = Listen port
 if-field-address = Server address(es)
 if-field-endpoint = Endpoint
@@ -90,6 +92,8 @@ if-field-mikrotik-username = RouterOS username
 if-field-mikrotik-password = RouterOS password
 if-field-mikrotik-password-keep = RouterOS password (leave blank to keep)
 if-field-mikrotik-insecure = Accept self-signed certificate
+if-immutable-note = Server addresses and the backend type can't be changed after creation.
+if-immutable-note-edit = Server addresses and the backend type can't be changed after creation. MikroTik credentials can still be updated here.
 
 ## ── Interface (legacy overview keys) ────────────────────────────
 interface-title = Interface

@@ -87,7 +87,9 @@ fn InterfaceSection(
         Card { class: "p-0 overflow-hidden",
             div { class: "px-4 py-3 border-b border-line-soft bg-surface-2 flex items-center gap-3 flex-wrap",
                 div { class: "flex-1 min-w-0",
-                    div { class: "text-fg-strong font-medium", "{iface.name}" }
+                    div { class: "text-fg-strong font-medium",
+                        { if iface.display_name.is_empty() { iface.name.clone() } else { iface.display_name.clone() } }
+                    }
                     div { class: "text-fg-muted text-xs", "{iface.endpoint} · {quota}" }
                 }
                 input {

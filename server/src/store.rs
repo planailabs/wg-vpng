@@ -18,7 +18,10 @@ use crate::wg;
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, schemars::JsonSchema)]
 pub struct Interface {
     pub id: Uuid,
+    /// WireGuard interface id (e.g. wg0) — unique, immutable, the system name.
     pub name: String,
+    /// Human-friendly label; empty falls back to `name` in the UI.
+    pub display_name: String,
     pub listen_port: i32,
     pub address: String,
     #[serde(skip_serializing)]
@@ -65,7 +68,7 @@ pub struct User {
     pub access_revoked: bool,
 }
 
-const IFACE_COLS: &str = "id, name, listen_port, address, private_key, public_key, endpoint, \
+const IFACE_COLS: &str = "id, name, display_name, listen_port, address, private_key, public_key, endpoint, \
     dns, allowed_ips, keepalive, device_limit, access_patterns, backend, last_error";
 const PEER_COLS: &str = "id, interface_id, user_id, name, public_key, preshared_key, address";
 const USER_COLS: &str = "id, email, name, is_admin, banned, access_revoked";
@@ -119,6 +122,7 @@ fn glob_match(pat: &str, s: &str) -> bool {
 pub async fn create_interface(
     pool: &PgPool,
     name: &str,
+    display_name: &str,
     listen_port: i32,
     address: &str,
     endpoint: &str,
@@ -135,11 +139,12 @@ pub async fn create_interface(
     let kp = wg::generate_keypair();
     let iface = sqlx::query_as::<_, Interface>(&format!(
         "INSERT INTO wg_interfaces \
-         (name, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, \
+         (name, display_name, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, \
           keepalive, device_limit, access_patterns, backend) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING {IFACE_COLS}"
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING {IFACE_COLS}"
     ))
     .bind(name)
+    .bind(display_name)
     .bind(listen_port)
     .bind(&address)
     .bind(&kp.private_key)
@@ -188,6 +193,7 @@ pub async fn interfaces_for_user(pool: &PgPool, email: &str) -> Result<Vec<Inter
 pub async fn update_interface(
     pool: &PgPool,
     id: Uuid,
+    display_name: Option<&str>,
     endpoint: Option<&str>,
     dns: Option<Option<&str>>,
     allowed_ips: Option<&str>,
@@ -196,7 +202,11 @@ pub async fn update_interface(
     access_patterns: Option<&[String]>,
     backend: Option<BackendConfig>,
 ) -> Result<Interface> {
+    // Server addresses are immutable after creation (changing them strands
+    // existing peers). The backend *kind* is also immutable, but its credentials
+    // (e.g. MikroTik URL/username/password) may be updated in place.
     let cur = get_interface(pool, id).await?.context("interface not found")?;
+    let new_display = display_name.map(str::to_string).unwrap_or(cur.display_name);
     let new_endpoint = endpoint.map(str::to_string).unwrap_or(cur.endpoint);
     let new_dns = match dns {
         Some(d) => d.map(str::to_string),
@@ -213,17 +223,32 @@ pub async fn update_interface(
     let new_patterns = access_patterns.map(<[String]>::to_vec).unwrap_or(cur.access_patterns);
     let new_backend = match backend {
         Some(mut b) => {
+            if b.kind() != cur.backend.kind() {
+                anyhow::bail!("backend type cannot be changed after creation");
+            }
             b.encrypt_secrets();
+            // A blank MikroTik password means "keep the stored one", so admins
+            // can edit the URL/username/insecure without re-typing the password.
+            if let (
+                BackendConfig::Mikrotik { password: newp, .. },
+                BackendConfig::Mikrotik { password: oldp, .. },
+            ) = (&mut b, &cur.backend)
+            {
+                if newp.is_empty() {
+                    *newp = oldp.clone();
+                }
+            }
             b
         }
         None => cur.backend,
     };
 
     let iface = sqlx::query_as::<_, Interface>(&format!(
-        "UPDATE wg_interfaces SET endpoint=$2, dns=$3, allowed_ips=$4, keepalive=$5, \
-         device_limit=$6, access_patterns=$7, backend=$8 WHERE id=$1 RETURNING {IFACE_COLS}"
+        "UPDATE wg_interfaces SET display_name=$2, endpoint=$3, dns=$4, allowed_ips=$5, keepalive=$6, \
+         device_limit=$7, access_patterns=$8, backend=$9 WHERE id=$1 RETURNING {IFACE_COLS}"
     ))
     .bind(id)
+    .bind(&new_display)
     .bind(&new_endpoint)
     .bind(&new_dns)
     .bind(&new_allowed)
@@ -681,6 +706,7 @@ mod tests {
         create_interface(
             pool,
             "wg0",
+            "",
             51820,
             addr,
             "vpn.example.com:51820",
@@ -751,7 +777,7 @@ mod tests {
         assert_eq!(backend.applied.lock().unwrap().len(), 1);
 
         // Widen the pattern -> mallory now active.
-        update_interface(&pool, iface.id, None, None, None, None, None, Some(&["*".into()]), None)
+        update_interface(&pool, iface.id, None, None, None, None, None, None, Some(&["*".into()]), None)
             .await
             .unwrap();
         assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 2);
@@ -769,7 +795,7 @@ mod tests {
 
         let a = mk_iface(&pool, &["*".into()], "10.8.0.1/24").await;
         // A second interface with a different name/subnet.
-        let b = create_interface(&pool, "wg1", 51821, "10.9.0.1/24", "vpn:51821", None, "10.9.0.0/24", 25, Some(2), &["*".into()], BackendConfig::SelfManaged).await.unwrap();
+        let b = create_interface(&pool, "wg1", "", 51821, "10.9.0.1/24", "vpn:51821", None, "10.9.0.0/24", 25, Some(2), &["*".into()], BackendConfig::SelfManaged).await.unwrap();
 
         let u: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
             .fetch_one(&pool).await.unwrap();

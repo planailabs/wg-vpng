@@ -70,7 +70,9 @@ interfaces-subtitle = WireGuard-Schnittstellen erstellen und verwalten. Jede hat
 interfaces-create-heading = Neue Schnittstelle
 interfaces-empty = Noch keine Schnittstellen.
 interfaces-backend-error = Backend-Fehler:
-if-field-name = Name
+if-field-name = Schnittstellen-ID (z. B. wg0)
+if-field-display-name = Anzeigename
+if-field-display-name-placeholder = z. B. Büro-VPN
 if-field-listen-port = Listen-Port
 if-field-address = Server-Adresse(n)
 if-field-endpoint = Endpunkt
@@ -89,6 +91,8 @@ if-field-mikrotik-username = RouterOS-Benutzername
 if-field-mikrotik-password = RouterOS-Passwort
 if-field-mikrotik-password-keep = RouterOS-Passwort (leer lassen zum Beibehalten)
 if-field-mikrotik-insecure = Selbstsigniertes Zertifikat akzeptieren
+if-immutable-note = Server-Adressen und der Backend-Typ können nach dem Erstellen nicht geändert werden.
+if-immutable-note-edit = Server-Adressen und der Backend-Typ können nach dem Erstellen nicht geändert werden. MikroTik-Zugangsdaten können hier weiterhin aktualisiert werden.
 
 ## ── Schnittstelle (alte Übersichts-Keys) ────────────────────────
 interface-title = Schnittstelle

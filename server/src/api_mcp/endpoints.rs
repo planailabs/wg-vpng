@@ -83,7 +83,10 @@ impl BackendInput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct InterfaceOutput {
     pub id: Uuid,
+    /// WireGuard interface id (e.g. wg0) — unique, immutable.
     pub name: String,
+    /// Human-friendly label; empty falls back to `name`.
+    pub display_name: String,
     pub listen_port: i32,
     pub address: String,
     pub public_key: String,
@@ -108,6 +111,7 @@ fn iface_output(i: &store::Interface) -> InterfaceOutput {
     InterfaceOutput {
         id: i.id,
         name: i.name.clone(),
+        display_name: i.display_name.clone(),
         listen_port: i.listen_port,
         address: i.address.clone(),
         public_key: i.public_key.clone(),
@@ -168,7 +172,11 @@ fn default_keepalive() -> i32 {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct InterfaceCreateInput {
+    /// WireGuard interface id (e.g. wg0) — unique, immutable.
     pub name: String,
+    /// Human-friendly label; empty falls back to `name`.
+    #[serde(default)]
+    pub display_name: String,
     #[serde(default = "default_listen_port")]
     pub listen_port: i32,
     /// Server tunnel address(es), comma-separated (dual-stack; IPv6 enforced).
@@ -200,6 +208,7 @@ pub async fn interface_create(
     let iface = store::create_interface(
         &pool,
         &i.name,
+        &i.display_name,
         i.listen_port,
         &i.address,
         &i.endpoint,
@@ -220,6 +229,9 @@ pub async fn interface_create(
 pub struct InterfaceUpdateInput {
     #[serde(default)]
     pub id: Option<Uuid>,
+    /// Human-friendly label; empty falls back to `name`.
+    #[serde(default)]
+    pub display_name: Option<String>,
     #[serde(default)]
     pub endpoint: Option<String>,
     /// Empty string clears DNS.
@@ -254,6 +266,7 @@ pub async fn interface_update(
     let updated = store::update_interface(
         &pool,
         iface.id,
+        i.display_name.as_deref(),
         i.endpoint.as_deref(),
         dns,
         i.allowed_ips.as_deref(),

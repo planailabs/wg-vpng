@@ -27,7 +27,7 @@ pub fn Admin() -> Element {
 
     // (id, name) pairs for the per-user device-create interface picker.
     let iface_opts: Vec<(Uuid, String)> = match &*ifaces.read() {
-        Some(Ok(l)) => l.iter().map(|i| (i.id, i.name.clone())).collect(),
+        Some(Ok(l)) => l.iter().map(|i| (i.id, if i.display_name.is_empty() { i.name.clone() } else { i.display_name.clone() })).collect(),
         _ => vec![],
     };
 

@@ -60,6 +60,10 @@ fn BackendFields(
     mk_pass: Signal<String>,
     mk_insecure: Signal<bool>,
     pass_placeholder: String,
+    /// Lock the backend *type* (immutable after creation). MikroTik credential
+    /// fields stay editable.
+    #[props(default = false)]
+    lock_kind: bool,
 ) -> Element {
     rsx! {
         div { class: "flex flex-col gap-2",
@@ -67,6 +71,7 @@ fn BackendFields(
             select {
                 class: "input",
                 value: "{kind}",
+                disabled: lock_kind,
                 onchange: move |e| kind.set(e.value()),
                 option { value: "self-managed", {t!("if-backend-self-managed")} }
                 option { value: "network-manager", {t!("if-backend-network-manager")} }
@@ -88,6 +93,7 @@ fn BackendFields(
 #[component]
 fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
     let mut name = use_signal(|| "wg0".to_string());
+    let mut display_name = use_signal(String::new);
     let mut listen_port = use_signal(|| "51820".to_string());
     let mut address = use_signal(|| "10.8.0.1/24, fd00:8::1/64".to_string());
     let mut endpoint = use_signal(String::new);
@@ -105,6 +111,7 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
     let submit = move |_| async move {
         match admin_create_interface(
             name(),
+            display_name(),
             listen_port().trim().parse().unwrap_or(51820),
             address(),
             endpoint(),
@@ -134,6 +141,7 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
             h3 { class: "text-sm font-semibold text-fg-strong mb-3", {t!("interfaces-create-heading")} }
             div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
                 Field { label: t!("if-field-name"), value: name, placeholder: "wg0".to_string() }
+                Field { label: t!("if-field-display-name"), value: display_name, placeholder: t!("if-field-display-name-placeholder") }
                 Field { label: t!("if-field-listen-port"), value: listen_port, placeholder: "51820".to_string() }
                 Field { label: t!("if-field-address"), value: address, placeholder: "10.8.0.1/24, fd00::1/64".to_string() }
                 Field { label: t!("if-field-endpoint"), value: endpoint, placeholder: "vpn.example.com:51820".to_string() }
@@ -150,6 +158,7 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
             div { class: "mt-3",
                 BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, pass_placeholder: t!("if-field-mikrotik-password") }
             }
+            p { class: "text-fg-faint text-xs mt-3", {t!("if-immutable-note")} }
             div { class: "mt-3",
                 Button { variant: ButtonVariant::Primary, onclick: submit, {t!("action-create")} }
             }
@@ -171,6 +180,7 @@ fn Field(label: String, value: Signal<String>, placeholder: String) -> Element {
 fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
     let id = iface.id;
     let mut editing = use_signal(|| false);
+    let mut display_name = use_signal(|| iface.display_name.clone());
     let mut endpoint = use_signal(|| iface.endpoint.clone());
     let mut dns = use_signal(|| iface.dns.clone().unwrap_or_default());
     let mut allowed_ips = use_signal(|| iface.allowed_ips.clone());
@@ -186,6 +196,7 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
     let save = move |_| async move {
         match admin_update_interface(
             id,
+            display_name(),
             endpoint(),
             dns(),
             allowed_ips(),
@@ -209,7 +220,12 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
         Card { class: "p-4",
             div { class: "flex items-center gap-3 flex-wrap",
                 div { class: "flex-1 min-w-0",
-                    div { class: "text-fg-strong font-medium", "{iface.name}" }
+                    div { class: "flex items-center gap-2 flex-wrap",
+                        span { class: "text-fg-strong font-medium",
+                            { if iface.display_name.is_empty() { iface.name.clone() } else { iface.display_name.clone() } }
+                        }
+                        span { class: "text-fg-faint text-xs font-mono px-1.5 py-0.5 rounded bg-surface-2", "{iface.name}" }
+                    }
                     div { class: "text-fg-muted text-xs", "{iface.backend_kind} · {iface.address} · {iface.endpoint}" }
                 }
                 Button { variant: ButtonVariant::Secondary, onclick: move |_| editing.toggle(),
@@ -243,6 +259,7 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
             if editing() {
                 div { class: "mt-4 border-t border-line-soft pt-3 flex flex-col gap-3",
                     div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
+                        Field { label: t!("if-field-display-name"), value: display_name, placeholder: t!("if-field-display-name-placeholder") }
                         Field { label: t!("if-field-endpoint"), value: endpoint, placeholder: String::new() }
                         Field { label: t!("if-field-dns"), value: dns, placeholder: String::new() }
                         Field { label: t!("if-field-allowed-ips"), value: allowed_ips, placeholder: String::new() }
@@ -253,7 +270,8 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
                         label { class: "label text-sm text-fg-muted", {t!("if-field-patterns")} }
                         textarea { class: "input w-full text-sm font-mono", rows: "2", value: "{patterns}", oninput: move |e| patterns.set(e.value()) }
                     }
-                    BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, pass_placeholder: t!("if-field-mikrotik-password-keep") }
+                    BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, pass_placeholder: t!("if-field-mikrotik-password-keep"), lock_kind: true }
+                    p { class: "text-fg-faint text-xs", {t!("if-immutable-note-edit")} }
                     div {
                         Button { variant: ButtonVariant::Primary, onclick: save, {t!("action-save")} }
                     }

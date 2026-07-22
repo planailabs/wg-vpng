@@ -26,7 +26,7 @@ pub async fn list_my_interfaces() -> Result<Vec<InterfaceAccessView>, ServerFnEr
     let mut out = Vec::with_capacity(ifaces.len());
     for i in ifaces {
         let used = crate::store::count_user_devices_on_interface(&pool, i.id, uid).await.map_err(err)?;
-        out.push(InterfaceAccessView { id: i.id, name: i.name, endpoint: i.endpoint, used, limit: i.device_limit });
+        out.push(InterfaceAccessView { id: i.id, name: i.name, display_name: i.display_name, endpoint: i.endpoint, used, limit: i.device_limit });
     }
     Ok(out)
 }
@@ -124,6 +124,7 @@ pub async fn admin_list_interfaces() -> Result<Vec<InterfaceAdminView>, ServerFn
 #[allow(clippy::too_many_arguments)]
 pub async fn admin_create_interface(
     name: String,
+    display_name: String,
     listen_port: i32,
     address: String,
     endpoint: String,
@@ -145,6 +146,7 @@ pub async fn admin_create_interface(
     let iface = crate::store::create_interface(
         &pool,
         &name,
+        &display_name,
         listen_port,
         &address,
         &endpoint,
@@ -165,6 +167,7 @@ pub async fn admin_create_interface(
 #[allow(clippy::too_many_arguments)]
 pub async fn admin_update_interface(
     id: Uuid,
+    display_name: String,
     endpoint: String,
     dns: String,
     allowed_ips: String,
@@ -179,18 +182,14 @@ pub async fn admin_update_interface(
 ) -> Result<(), ServerFnError> {
     let pool = crate::server_state::pool()?;
     require_admin(&pool).await?;
-    // Empty password on update = keep existing (don't overwrite). We only set a
-    // new backend when the password is supplied OR the kind changed; simplest:
-    // always rebuild, but if mikrotik password is blank, keep the stored one.
-    let backend = if backend_kind == "mikrotik" && mikrotik_password.is_empty() {
-        None // keep existing backend (and its stored password)
-    } else {
-        Some(build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure)?)
-    };
+    // The backend *type* is immutable (enforced in the store); credentials may be
+    // updated. A blank MikroTik password keeps the stored one (store handles it).
+    let backend = Some(build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure)?);
     let patterns = parse_patterns(&access_patterns);
     crate::store::update_interface(
         &pool,
         id,
+        Some(&display_name),
         Some(&endpoint),
         Some(opt(&dns)),
         Some(&allowed_ips),
@@ -368,6 +367,7 @@ fn iface_admin_view(i: &crate::store::Interface) -> InterfaceAdminView {
     InterfaceAdminView {
         id: i.id,
         name: i.name.clone(),
+        display_name: i.display_name.clone(),
         listen_port: i.listen_port,
         address: i.address.clone(),
         public_key: i.public_key.clone(),
