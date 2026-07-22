@@ -45,8 +45,10 @@ pub fn ConfigPanel(config: String, qr_svg: String) -> Element {
             div { class: "flex flex-col sm:flex-row gap-4",
                 if !qr_svg.is_empty() {
                     div {
-                        class: "shrink-0 rounded-lg bg-white p-2 self-start shadow-card",
-                        style: "width:150px;height:150px",
+                        // The SVG carries its own width/height; the viewBox lets us
+                        // scale it to fill this fixed box via the child selector.
+                        class: "shrink-0 rounded-lg bg-white p-3 self-start shadow-card [&>svg]:block [&>svg]:w-full [&>svg]:h-full",
+                        style: "width:240px;height:240px",
                         dangerous_inner_html: "{qr_svg}",
                     }
                 }
