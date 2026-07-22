@@ -175,6 +175,11 @@ pub struct PeerCreateInput {
     /// Display label.
     #[serde(default)]
     pub name: Option<String>,
+    /// Explicit address/subnet CIDR(s) to assign (admin). Any prefix length —
+    /// use this to grant a device a whole routed subnet (e.g. an IPv6 `/64`).
+    /// Omit to auto-allocate a host address in each interface subnet.
+    #[serde(default)]
+    pub address: Option<String>,
 }
 
 pub async fn peer_create(
@@ -189,9 +194,11 @@ pub async fn peer_create(
         None => None,
     };
     let name = i.name.unwrap_or_default();
-    let peer = store::create_peer(&pool, iface.id, user_id, &name)
-        .await
-        .map_err(internal)?;
+    let peer = match i.address.as_deref().filter(|a| !a.is_empty()) {
+        Some(addr) => store::create_peer_with_address(&pool, iface.id, user_id, &name, addr).await,
+        None => store::create_peer(&pool, iface.id, user_id, &name).await,
+    }
+    .map_err(internal)?;
     sync(&pool, iface.id).await?;
     Ok(peer)
 }

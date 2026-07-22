@@ -61,6 +61,7 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
         async move { admin_user_devices(uid).await }
     })?;
     let mut new_device = use_signal(String::new);
+    let mut new_address = use_signal(String::new);
     let mut limit_input = use_signal(|| user.device_limit.map(|l| l.to_string()).unwrap_or_default());
 
     rsx! {
@@ -142,13 +143,24 @@ fn UserCard(user: UserAdminView, on_change: EventHandler<()>, on_error: EventHan
                         value: "{new_device}",
                         oninput: move |e| new_device.set(e.value()),
                     }
+                    input {
+                        class: "input w-56 text-sm font-mono",
+                        placeholder: t!("users-new-device-subnet-placeholder"),
+                        value: "{new_address}",
+                        oninput: move |e| new_address.set(e.value()),
+                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| {
-                            let name = new_device();
+                            let (name, addr) = (new_device(), new_address());
                             async move {
-                                match admin_create_device(uid, name).await {
-                                    Ok(_) => { new_device.set(String::new()); local += 1; on_change.call(()); }
+                                match admin_create_device(uid, name, addr).await {
+                                    Ok(_) => {
+                                        new_device.set(String::new());
+                                        new_address.set(String::new());
+                                        local += 1;
+                                        on_change.call(());
+                                    }
                                     Err(e) => on_error.call(e.to_string()),
                                 }
                             }

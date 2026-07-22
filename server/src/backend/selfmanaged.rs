@@ -94,8 +94,10 @@ impl WireguardBackend for SelfManagedBackend {
             run("ip", &["link", "add", "dev", name, "type", "wireguard"]).await?;
         }
 
-        // Ensure the server address is present (ignore "exists").
-        let _ = run("ip", &["address", "add", &iface.address, "dev", name]).await;
+        // Ensure each server address is present (dual-stack; ignore "exists").
+        for addr in iface.address.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+            let _ = run("ip", &["address", "add", addr, "dev", name]).await;
+        }
 
         // Bring it up.
         run("ip", &["link", "set", "up", "dev", name]).await?;

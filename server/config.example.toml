@@ -17,14 +17,16 @@ backend = "self-managed"
 
 interface_name = "wg0"
 listen_port = 51820
-# Server tunnel address (with prefix); peers are allocated from this subnet.
-address = "10.8.0.1/24"
+# Server tunnel address(es), comma-separated. Dual-stack by default — IPv6 is
+# non-optional; each peer gets an address from every subnet. Keep at least one
+# v4 and one v6 subnet for dual-stack clients.
+address = "10.8.0.1/24, fd00:8::1/64"
 # Public host:port clients dial.
 endpoint = "vpn.example.com:51820"
-# DNS pushed to clients (optional).
-dns = "10.8.0.1"
-# Networks routed through the tunnel (client AllowedIPs).
-allowed_ips = "10.8.0.0/24"
+# DNS pushed to clients (optional; may be v4 and/or v6).
+dns = "10.8.0.1, fd00:8::1"
+# Networks routed through the tunnel (client AllowedIPs), comma-separated.
+allowed_ips = "10.8.0.0/24, fd00:8::/64"
 keepalive = 25
 # Default number of devices (configs) each user may create. Admins can
 # override this per-user from the Users page.

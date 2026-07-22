@@ -89,30 +89,77 @@ pub fn render_client_config(c: &ClientConfig) -> String {
     s
 }
 
-/// Pick the lowest free host address in `cidr` (e.g. `10.8.0.0/24`), skipping
-/// the network address and any address already in `taken` (each `taken` entry
-/// may carry a `/xx` suffix, which is ignored). Returns `10.8.0.N/32`.
-pub fn allocate_address(cidr: &str, server_address: &str, taken: &[String]) -> Result<String, String> {
-    use std::net::Ipv4Addr;
-    let net: ipnet::Ipv4Net = cidr
-        .parse()
-        .map_err(|e| format!("invalid interface cidr {cidr}: {e}"))?;
+/// Parse an interface address spec — one or more comma/space-separated CIDRs
+/// (e.g. `10.8.0.1/24, fd00:8::1/64`) — into subnets. Supports IPv4, IPv6, or
+/// both (dual-stack).
+pub fn parse_subnets(spec: &str) -> Result<Vec<ipnet::IpNet>, String> {
+    let nets: Vec<ipnet::IpNet> = spec
+        .split([',', ' ', '\t'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<ipnet::IpNet>().map_err(|e| format!("invalid CIDR {s}: {e}")))
+        .collect::<Result<_, _>>()?;
+    if nets.is_empty() {
+        return Err("no interface subnets configured".into());
+    }
+    Ok(nets)
+}
 
-    let strip = |a: &str| -> Option<Ipv4Addr> { a.split('/').next()?.trim().parse().ok() };
-    let mut used: std::collections::HashSet<Ipv4Addr> = taken.iter().filter_map(|a| strip(a)).collect();
-    if let Some(sa) = strip(server_address) {
-        used.insert(sa);
+fn host_prefix(ip: &std::net::IpAddr) -> u8 {
+    match ip {
+        std::net::IpAddr::V4(_) => 32,
+        std::net::IpAddr::V6(_) => 128,
+    }
+}
+
+/// Collect the individual host addresses referenced by an address string
+/// (which may itself be a comma-list of CIDRs).
+fn addrs_of(spec: &str) -> impl Iterator<Item = std::net::IpAddr> + '_ {
+    spec.split([',', ' '])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.split('/').next()?.trim().parse::<std::net::IpAddr>().ok())
+}
+
+/// Allocate one free host address in **each** interface subnet (so a dual-stack
+/// interface yields a v4 + v6 address), avoiding the interface's own addresses
+/// and anything already in `taken` (each entry may be a comma-list of CIDRs).
+/// Returns the assigned host CIDRs joined by ", " (e.g. `10.8.0.5/32, fd00:8::5/128`).
+pub fn allocate_addresses(subnets: &[ipnet::IpNet], taken: &[String]) -> Result<String, String> {
+    let mut used: std::collections::HashSet<std::net::IpAddr> =
+        taken.iter().flat_map(|t| addrs_of(t)).collect();
+    // Exclude each subnet's own (server) address.
+    for net in subnets {
+        used.insert(net.addr());
     }
 
-    for host in net.hosts() {
-        if host == net.network() || host == net.broadcast() {
-            continue;
+    let mut out: Vec<String> = Vec::with_capacity(subnets.len());
+    for net in subnets {
+        let mut allocated = None;
+        for host in net.hosts() {
+            if host == net.network() || host == net.broadcast() {
+                continue;
+            }
+            if !used.contains(&host) {
+                used.insert(host);
+                allocated = Some(format!("{host}/{}", host_prefix(&host)));
+                break;
+            }
         }
-        if !used.contains(&host) {
-            return Ok(format!("{host}/32"));
+        match allocated {
+            Some(a) => out.push(a),
+            None => return Err(format!("no free addresses left in {net}")),
         }
     }
-    Err(format!("no free addresses left in {cidr}"))
+    Ok(out.join(", "))
+}
+
+/// Validate an admin-supplied device address/subnet spec (one or more CIDRs,
+/// any prefix length — this is how a device is granted a whole routed subnet,
+/// e.g. a `/64` IPv6 network). Returns the normalized spec.
+pub fn validate_address_spec(spec: &str) -> Result<String, String> {
+    let nets = parse_subnets(spec)?;
+    Ok(nets.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", "))
 }
 
 #[cfg(test)]
@@ -180,15 +227,42 @@ mod tests {
 
     #[test]
     fn allocates_lowest_free_skipping_server_and_taken() {
-        // .1 is the server; .2 taken -> next is .3
-        let a = allocate_address("10.8.0.0/24", "10.8.0.1/24", &["10.8.0.2/32".into()]).unwrap();
+        // server .1 excluded; .2 taken -> next is .3
+        let subnets = parse_subnets("10.8.0.1/24").unwrap();
+        let a = allocate_addresses(&subnets, &["10.8.0.2/32".into()]).unwrap();
         assert_eq!(a, "10.8.0.3/32");
     }
 
     #[test]
+    fn allocates_dual_stack() {
+        let subnets = parse_subnets("10.8.0.1/24, fd00:8::1/64").unwrap();
+        let a = allocate_addresses(&subnets, &[]).unwrap();
+        assert_eq!(a, "10.8.0.2/32, fd00:8::2/128");
+    }
+
+    #[test]
+    fn allocates_ipv6_only() {
+        let subnets = parse_subnets("fd00:8::1/64").unwrap();
+        let a = allocate_addresses(&subnets, &["fd00:8::2/128".into()]).unwrap();
+        assert_eq!(a, "fd00:8::3/128");
+    }
+
+    #[test]
     fn allocation_exhaustion_errors() {
-        // /30 has hosts .1 and .2; server takes .1, peer takes .2 -> none left.
-        let r = allocate_address("10.9.0.0/30", "10.9.0.1/30", &["10.9.0.2/32".into()]);
-        assert!(r.is_err());
+        // /30 has hosts .1 and .2; server .1 excluded, .2 taken -> none left.
+        let subnets = parse_subnets("10.9.0.1/30").unwrap();
+        assert!(allocate_addresses(&subnets, &["10.9.0.2/32".into()]).is_err());
+    }
+
+    #[test]
+    fn validates_admin_subnet_spec() {
+        // A bigger-than-single-host subnet (admin-assigned routed network).
+        assert_eq!(validate_address_spec("fd00:dead::/64").unwrap(), "fd00:dead::/64");
+        assert_eq!(
+            validate_address_spec("10.20.0.0/24, fd00:2::/64").unwrap(),
+            "10.20.0.0/24, fd00:2::/64"
+        );
+        assert!(validate_address_spec("not-an-ip").is_err());
+        assert!(validate_address_spec("").is_err());
     }
 }

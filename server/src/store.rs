@@ -181,7 +181,8 @@ pub async fn get_peer(pool: &PgPool, id: Uuid) -> Result<Option<Peer>> {
 }
 
 /// Create a peer on `interface_id` owned by `user_id`: generate a keypair +
-/// preshared key and allocate the next free tunnel address.
+/// preshared key and allocate the next free tunnel address in each of the
+/// interface's subnets (so dual-stack interfaces yield a v4 + v6 address).
 pub async fn create_peer(
     pool: &PgPool,
     interface_id: Uuid,
@@ -191,18 +192,40 @@ pub async fn create_peer(
     let iface = get_interface(pool, interface_id)
         .await?
         .context("interface not found")?;
+    let subnets = wg::parse_subnets(&iface.address).map_err(anyhow::Error::msg)?;
     let taken: Vec<String> = list_peers(pool, interface_id)
         .await?
         .into_iter()
         .map(|p| p.address)
         .collect();
-    let address = wg::allocate_address(&iface.address, &iface.address, &taken)
-        .map_err(anyhow::Error::msg)?;
+    let address = wg::allocate_addresses(&subnets, &taken).map_err(anyhow::Error::msg)?;
+    insert_peer(pool, interface_id, user_id, name, &address).await
+}
 
+/// Create a peer with an explicit address/subnet spec (admin only). The spec is
+/// one or more CIDRs of any prefix length — this is how a device is granted a
+/// whole routed subnet (e.g. an IPv6 `/64`) rather than a single host address.
+pub async fn create_peer_with_address(
+    pool: &PgPool,
+    interface_id: Uuid,
+    user_id: Option<Uuid>,
+    name: &str,
+    address_spec: &str,
+) -> Result<Peer> {
+    let address = wg::validate_address_spec(address_spec).map_err(anyhow::Error::msg)?;
+    insert_peer(pool, interface_id, user_id, name, &address).await
+}
+
+async fn insert_peer(
+    pool: &PgPool,
+    interface_id: Uuid,
+    user_id: Option<Uuid>,
+    name: &str,
+    address: &str,
+) -> Result<Peer> {
     let kp = wg::generate_keypair();
     let psk = wg::generate_preshared_key();
-
-    let peer = sqlx::query_as::<_, Peer>(&format!(
+    sqlx::query_as::<_, Peer>(&format!(
         "INSERT INTO wg_peers \
          (interface_id, user_id, name, private_key, public_key, preshared_key, address) \
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING {PEER_COLS}"
@@ -213,11 +236,10 @@ pub async fn create_peer(
     .bind(&kp.private_key)
     .bind(&kp.public_key)
     .bind(&psk)
-    .bind(&address)
+    .bind(address)
     .fetch_one(pool)
     .await
-    .context("insert peer")?;
-    Ok(peer)
+    .context("insert peer")
 }
 
 /// Replace a peer's keypair (and preshared key), keeping its address. Returns
@@ -556,5 +578,34 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(effective_device_limit(&u2, 5), 2);
+    }
+
+    // Dual-stack interface yields v4+v6 device addresses; admins can assign a
+    // whole routed subnet to a device.
+    #[tokio::test]
+    async fn dual_stack_and_subnet_device() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let mut cfg = test_wg_config();
+        cfg.address = "10.8.0.1/24, fd00:8::1/64".into();
+        cfg.allowed_ips = "10.8.0.0/24, fd00:8::/64".into();
+        let iface = ensure_default_interface(&pool, &cfg).await.unwrap();
+
+        let p = create_peer(&pool, iface.id, None, "dual").await.unwrap();
+        assert_eq!(p.address, "10.8.0.2/32, fd00:8::2/128");
+
+        // Admin assigns an IPv6 /64 subnet to a device (a routed network).
+        let sub = create_peer_with_address(&pool, iface.id, None, "site", "fd00:beef::/64")
+            .await
+            .unwrap();
+        assert_eq!(sub.address, "fd00:beef::/64");
+
+        // The rendered client config carries both the dual-stack address and
+        // the dual-stack routed networks.
+        let cfg_text = render_peer_config(&iface, &p);
+        assert!(cfg_text.contains("Address = 10.8.0.2/32, fd00:8::2/128"));
+        assert!(cfg_text.contains("AllowedIPs = 10.8.0.0/24, fd00:8::/64"));
     }
 }

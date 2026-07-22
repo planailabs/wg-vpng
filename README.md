@@ -14,6 +14,10 @@ is applied through a pluggable backend.
   set device limits, revoke VPN access, ban (blocks login + drops devices), and
   delete users. Revoking/banning immediately drops the user's peers from the
   backend.
+- **Dual-stack** — IPv6 is always on (non-optional): the interface is IPv4 +
+  IPv6 by default and every device is allocated an address in each subnet.
+  Admins can also assign a device a whole routed subnet of any prefix (e.g. an
+  IPv6 `/64`) for site-to-site / gateway devices.
 - **Pluggable backends** (`[wireguard] backend = …`):
   - `self-managed` — a kernel WireGuard interface driven by `wg` + `ip`.
   - `network-manager` — an `nmcli` keyfile connection profile.

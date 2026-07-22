@@ -128,13 +128,25 @@ pub async fn admin_user_devices(user_id: Uuid) -> Result<Vec<PeerView>, ServerFn
     Ok(peers.into_iter().map(|p| peer_view(p, email.clone())).collect())
 }
 
-/// Admin creates a device for a user (bypasses the per-user limit).
+/// Admin creates a device for a user (bypasses the per-user limit). An optional
+/// `address` assigns an explicit CIDR/subnet (any prefix — e.g. an IPv6 `/64`);
+/// empty auto-allocates a host address in each interface subnet.
 #[server]
-pub async fn admin_create_device(user_id: Uuid, name: String) -> Result<PeerView, ServerFnError> {
+pub async fn admin_create_device(
+    user_id: Uuid,
+    name: String,
+    address: String,
+) -> Result<PeerView, ServerFnError> {
     let pool = crate::server_state::pool()?;
     require_admin(&pool).await?;
     let iface = default_interface_id(&pool).await?;
-    let peer = crate::store::create_peer(&pool, iface, Some(user_id), &name).await.map_err(err)?;
+    let addr = address.trim();
+    let peer = if addr.is_empty() {
+        crate::store::create_peer(&pool, iface, Some(user_id), &name).await
+    } else {
+        crate::store::create_peer_with_address(&pool, iface, Some(user_id), &name, addr).await
+    }
+    .map_err(err)?;
     sync(&pool, iface).await?;
     Ok(peer_view(peer, None))
 }

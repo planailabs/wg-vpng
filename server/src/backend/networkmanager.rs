@@ -43,7 +43,9 @@ pub fn render_keyfile(iface: &InterfaceSpec, peers: &[PeerSpec]) -> String {
 
     for p in peers {
         s.push_str(&format!("[wireguard-peer.{}]\n", p.public_key));
-        s.push_str(&format!("allowed-ips={};\n", p.address));
+        // NM keyfile lists AllowedIPs semicolon-separated.
+        let allowed = cidrs(&p.address).collect::<Vec<_>>().join(";");
+        s.push_str(&format!("allowed-ips={allowed};\n"));
         if let Some(psk) = p.preshared_key.as_deref().filter(|k| !k.is_empty()) {
             s.push_str(&format!("preshared-key={psk}\n"));
             s.push_str("preshared-key-flags=0\n");
@@ -51,12 +53,34 @@ pub fn render_keyfile(iface: &InterfaceSpec, peers: &[PeerSpec]) -> String {
         s.push('\n');
     }
 
+    // Split the interface's addresses into v4/v6 sections (dual-stack).
+    let v4: Vec<&str> = cidrs(&iface.address).filter(|a| !a.contains(':')).collect();
+    let v6: Vec<&str> = cidrs(&iface.address).filter(|a| a.contains(':')).collect();
+
     s.push_str("[ipv4]\n");
-    s.push_str(&format!("address1={}\n", iface.address));
-    s.push_str("method=manual\n\n");
+    if v4.is_empty() {
+        s.push_str("method=disabled\n\n");
+    } else {
+        for (i, a) in v4.iter().enumerate() {
+            s.push_str(&format!("address{}={a}\n", i + 1));
+        }
+        s.push_str("method=manual\n\n");
+    }
     s.push_str("[ipv6]\n");
-    s.push_str("method=ignore\n");
+    if v6.is_empty() {
+        s.push_str("method=ignore\n");
+    } else {
+        for (i, a) in v6.iter().enumerate() {
+            s.push_str(&format!("address{}={a}\n", i + 1));
+        }
+        s.push_str("method=manual\n");
+    }
     s
+}
+
+/// Split a comma/space-separated CIDR spec into individual trimmed CIDRs.
+fn cidrs(spec: &str) -> impl Iterator<Item = &str> {
+    spec.split([',', ' ']).map(str::trim).filter(|a| !a.is_empty())
 }
 
 async fn nmcli(args: &[&str]) -> Result<()> {

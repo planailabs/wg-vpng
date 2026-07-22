@@ -49,7 +49,9 @@ pub struct WireguardConfig {
     pub interface_name: String,
     #[serde(default = "default_listen_port")]
     pub listen_port: u16,
-    /// Server tunnel address with prefix, e.g. `10.8.0.1/24`.
+    /// Server tunnel address(es) with prefix — one or more comma-separated
+    /// CIDRs. Defaults to dual-stack (IPv4 + IPv6 ULA); IPv6 is always on.
+    #[serde(default = "default_address")]
     pub address: String,
     /// Public `host:port` clients dial.
     pub endpoint: String,
@@ -77,8 +79,12 @@ fn default_iface_name() -> String {
 fn default_listen_port() -> u16 {
     51820
 }
+/// Dual-stack server address: IPv4 pool + IPv6 ULA pool. IPv6 is non-optional.
+fn default_address() -> String {
+    "10.8.0.1/24, fd00:8::1/64".to_string()
+}
 fn default_allowed_ips() -> String {
-    "10.8.0.0/24".to_string()
+    "10.8.0.0/24, fd00:8::/64".to_string()
 }
 fn default_keepalive() -> u16 {
     25

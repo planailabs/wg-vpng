@@ -46,6 +46,7 @@ users-device-count = { $count } / { $limit } Geräte
 users-limit-label = Limit
 users-limit-placeholder = Std.
 users-new-device-placeholder = Name des neuen Geräts
+users-new-device-subnet-placeholder = Subnetz (optional, z. B. fd00:2::/64)
 users-no-devices = Keine Geräte.
 users-loading-devices = Geräte werden geladen…
 
