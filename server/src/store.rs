@@ -59,13 +59,36 @@ const PEER_COLS: &str =
 
 // ── Interfaces ────────────────────────────────────────────────────────
 
+/// Default IPv6 pools appended when a config/interface lacks IPv6 (IPv6 is
+/// non-optional).
+const DEFAULT_V6_ADDR: &str = "fd00:8::1/64";
+const DEFAULT_V6_NET: &str = "fd00:8::/64";
+
 /// Seed the configured interface on first boot (generating a keypair), or
-/// return the existing stored row. The stored row is authoritative thereafter.
+/// return the existing stored row. IPv6 is enforced on both paths: a config or
+/// pre-existing interface without an IPv6 subnet gets the default ULA appended
+/// (so the interface is always dual-stack).
 pub async fn ensure_default_interface(pool: &PgPool, cfg: &WireguardConfig) -> Result<Interface> {
     if let Some(existing) = get_interface_by_name(pool, &cfg.interface_name).await? {
-        return Ok(existing);
+        let address = wg::ensure_ipv6(&existing.address, DEFAULT_V6_ADDR);
+        let allowed_ips = wg::ensure_ipv6(&existing.allowed_ips, DEFAULT_V6_NET);
+        if address == existing.address && allowed_ips == existing.allowed_ips {
+            return Ok(existing);
+        }
+        // Upgrade a v4-only interface in place to dual-stack.
+        return sqlx::query_as::<_, Interface>(&format!(
+            "UPDATE wg_interfaces SET address=$2, allowed_ips=$3 WHERE id=$1 RETURNING {IFACE_COLS}"
+        ))
+        .bind(existing.id)
+        .bind(&address)
+        .bind(&allowed_ips)
+        .fetch_one(pool)
+        .await
+        .context("enforce ipv6 on interface");
     }
     let kp = wg::generate_keypair();
+    let address = wg::ensure_ipv6(&cfg.address, DEFAULT_V6_ADDR);
+    let allowed_ips = wg::ensure_ipv6(&cfg.allowed_ips, DEFAULT_V6_NET);
     let iface = sqlx::query_as::<_, Interface>(&format!(
         "INSERT INTO wg_interfaces \
          (name, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, keepalive) \
@@ -73,12 +96,12 @@ pub async fn ensure_default_interface(pool: &PgPool, cfg: &WireguardConfig) -> R
     ))
     .bind(&cfg.interface_name)
     .bind(cfg.listen_port as i32)
-    .bind(&cfg.address)
+    .bind(&address)
     .bind(&kp.private_key)
     .bind(&kp.public_key)
     .bind(&cfg.endpoint)
     .bind(&cfg.dns)
-    .bind(&cfg.allowed_ips)
+    .bind(&allowed_ips)
     .bind(cfg.keepalive as i32)
     .fetch_one(pool)
     .await
@@ -502,11 +525,12 @@ mod tests {
 
         let backend = MockBackend::default();
 
-        // Create two peers -> .2 and .3 (server holds .1).
+        // Create two peers -> .2 and .3 (server holds .1). IPv6 is enforced, so
+        // the v4-only config becomes dual-stack; check the v4 host part.
         let p1 = create_peer(&pool, iface.id, None, "a").await.unwrap();
         let p2 = create_peer(&pool, iface.id, None, "b").await.unwrap();
-        assert_eq!(p1.address, "10.8.0.2/32");
-        assert_eq!(p2.address, "10.8.0.3/32");
+        assert!(p1.address.starts_with("10.8.0.2/32"), "{}", p1.address);
+        assert!(p2.address.starts_with("10.8.0.3/32"), "{}", p2.address);
 
         sync_interface(&pool, &backend, iface.id).await.unwrap();
         assert_eq!(backend.applied.lock().unwrap().len(), 2);

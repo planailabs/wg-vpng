@@ -129,7 +129,10 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"curl -sf -X DELETE {auth} http://localhost:8080/api/v1/peers/{pid}")
     absent(machine, newpub)
 
-    # The web UI serves its shell.
-    machine.succeed("curl -sf http://localhost:8080/ | grep -qi 'wg-vpng'")
+    # The web UI serves its shell. (Write to a file first: piping curl into
+    # `grep -q` trips the test's pipefail — grep closes the pipe early and curl
+    # exits 23/EPIPE.)
+    machine.succeed("curl -sf http://localhost:8080/ -o /tmp/index.html")
+    machine.succeed("grep -qi 'wg-vpng' /tmp/index.html")
   '';
 }

@@ -1,0 +1,60 @@
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+
+before_script:
+  # The custom executor mounts /cache for Cargo; initialize the target before
+  # symlinking so nested tools (dx, cargo) share one cache dir.
+  - mkdir -p /cache/cargo
+  - rm -rf ~/.cargo
+  - ln -s /cache/cargo ~/.cargo
+  - export CARGO_HOME="$HOME/.cargo"
+
+# Warm the xzar cache (devshell + package + images) so test/deploy substitute.
+build:
+  stage: build
+  tags:
+    - nix-image
+  script:
+    - nix develop -c bash xzar.sh
+  timeout: 2h
+  resource_group: build-cache
+
+# Unit + pgtemp integration (server feature) + mikrotik-api, then the wasm
+# client typecheck.
+test:
+  stage: test
+  tags:
+    - nix-image
+  script:
+    - nix develop -c cargo test -p wg-vpng-server --no-default-features --features server --locked
+    - nix develop -c cargo test -p mikrotik-api --locked
+    - nix develop -c cargo check -p wg-vpng-server --no-default-features --features web --target wasm32-unknown-unknown --locked
+  timeout: 2h
+
+# VM-backed flake checks (all three backends) — run serially so one test VM
+# cannot starve another until the NixOS backdoor times out.
+flake-check:
+  stage: test
+  tags:
+    - nix-image
+  script:
+    - nix flake check -L --max-jobs 1
+  timeout: 2h
+
+# Build + push the OCI image to the GitLab registry (trunk only).
+deploy:
+  stage: deploy
+  tags:
+    - nix-image
+  only:
+    - trunk
+  script:
+    - nix develop -c bash docker-push.sh
+  timeout: 2h
+  environment: production
+  resource_group: production

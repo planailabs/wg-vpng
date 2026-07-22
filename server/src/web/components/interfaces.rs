@@ -19,11 +19,13 @@ pub fn Interfaces() -> Element {
             Some(Ok(i)) => rsx! {
                 Card { class: "p-6 max-w-xl mx-auto",
                     Row { label: t!("iface-name"), value: i.name.clone() }
-                    Row { label: t!("iface-address"), value: i.address.clone() }
+                    Row { label: t!("iface-address-v4"), value: family(&i.address, false) }
+                    Row { label: t!("iface-address-v6"), value: family(&i.address, true) }
                     Row { label: t!("iface-listen-port"), value: i.listen_port.to_string() }
                     Row { label: t!("iface-endpoint"), value: i.endpoint.clone() }
                     Row { label: t!("iface-public-key"), value: i.public_key.clone() }
-                    Row { label: t!("iface-routed-networks"), value: i.allowed_ips.clone() }
+                    Row { label: t!("iface-routed-v4"), value: family(&i.allowed_ips, false) }
+                    Row { label: t!("iface-routed-v6"), value: family(&i.allowed_ips, true) }
                     Row { label: t!("iface-dns"), value: i.dns.clone().unwrap_or_else(|| "—".into()) }
                 }
             },
@@ -31,6 +33,18 @@ pub fn Interfaces() -> Element {
             None => rsx! { p { class: "text-fg-muted", {t!("common-loading")} } },
         }
     }
+}
+
+/// Pick the IPv4 (`v6 = false`) or IPv6 (`v6 = true`) members of a comma-list
+/// address spec; `—` when that family is absent.
+fn family(spec: &str, v6: bool) -> String {
+    let parts: Vec<&str> = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| s.contains(':') == v6)
+        .collect();
+    if parts.is_empty() { "—".to_string() } else { parts.join(", ") }
 }
 
 #[component]

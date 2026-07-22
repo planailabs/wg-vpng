@@ -11,9 +11,15 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "github:numtide/flake-utils";
+
+    # Binary cache client (xzar.plan.ai) + the NixOS-in-Incus CI runner image,
+    # same as mac-mgmt / hugger.
+    xzar.url = "github:mkg20001/xzar";
+    xzar.inputs.nixpkgs.follows = "nixpkgs";
+    gitlab-incus-image.url = "git+https://git.mkg20001.io/mkg20001/gitlab-incus-image.git";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, ... }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, xzar, gitlab-incus-image, ... }:
     {
       overlays.default = import ./overlay.nix { gitSha = self.rev or self.dirtyRev or "unknown"; };
       nixosModules.default = import ./server/module.nix;
@@ -25,6 +31,7 @@
         overlays = [
           (import rust-overlay)
           (import ./overlay.nix { inherit gitSha; })
+          xzar.overlays.default
         ];
         pkgs = import nixpkgs { inherit system overlays; };
         toolchain = pkgs.rust-bin.stable.latest.default.override {
@@ -62,6 +69,10 @@
             wasm-bindgen-cli_0_2_121
             binaryen # wasm-opt
             lld
+
+            # CI: push the OCI image (docker-push.sh) + warm the xzar cache (xzar.sh)
+            skopeo
+            xzar-client
           ];
 
           RUST_SRC_PATH = "${toolchain}/lib/rustlib/src/rust/library";
@@ -71,6 +82,35 @@
           default = pkgs.wg-vpng-server;
           wg-vpng-server = pkgs.wg-vpng-server;
           dioxus-cli-patched = pkgs.dioxus-cli-patched;
+        } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          # OCI image (nix dockerTools). Push with docker-push.sh.
+          docker = import ./docker.nix {
+            inherit pkgs;
+            wg-vpng-server = pkgs.wg-vpng-server;
+            tag = gitSha;
+          };
+
+          # NixOS-in-Incus image for the GitLab `nix-image` CI runner, wired to
+          # the xzar.plan.ai binary cache.
+          image = (nixpkgs.lib.nixosSystem {
+            system = "x86_64-linux";
+            modules = [
+              "${nixpkgs}/nixos/modules/virtualisation/lxc-container.nix"
+              gitlab-incus-image.nixosModules.gitlab-incus-image
+              ({ pkgs, ... }: {
+                environment.systemPackages = with pkgs; [ openssh rsync xzar-client pixz ];
+                nixpkgs.overlays = [ xzar.overlays.default ];
+                programs.git.config.advice.detachedHead = false;
+                system.stateVersion = "26.11";
+                nix.settings = {
+                  substituters = [ "https://xzar.plan.ai" ];
+                  trusted-public-keys = [
+                    "xzar.plan.ai:KUE66pjr6UX5HHCn9kedN1DJ2J5nSlBrKmE7tUjXewE="
+                  ];
+                };
+              })
+            ];
+          }).config.system.build.gitlab-incus-image;
         };
 
         # nixpkgs.lib (not pkgs.lib): evaluating pkgs for unsupported systems

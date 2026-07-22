@@ -154,6 +154,27 @@ pub fn allocate_addresses(subnets: &[ipnet::IpNet], taken: &[String]) -> Result<
     Ok(out.join(", "))
 }
 
+/// Whether an address spec contains at least one IPv6 subnet.
+pub fn has_ipv6(spec: &str) -> bool {
+    parse_subnets(spec)
+        .map(|nets| nets.iter().any(|n| n.addr().is_ipv6()))
+        .unwrap_or(false)
+}
+
+/// Enforce IPv6 (non-optional): if `spec` has no IPv6 subnet, append
+/// `default_v6`. Returns the (possibly extended) spec.
+pub fn ensure_ipv6(spec: &str, default_v6: &str) -> String {
+    if has_ipv6(spec) {
+        return spec.to_string();
+    }
+    let trimmed = spec.trim().trim_end_matches(',').trim();
+    if trimmed.is_empty() {
+        default_v6.to_string()
+    } else {
+        format!("{trimmed}, {default_v6}")
+    }
+}
+
 /// Validate an admin-supplied device address/subnet spec (one or more CIDRs,
 /// any prefix length — this is how a device is granted a whole routed subnet,
 /// e.g. a `/64` IPv6 network). Returns the normalized spec.
@@ -252,6 +273,18 @@ mod tests {
         // /30 has hosts .1 and .2; server .1 excluded, .2 taken -> none left.
         let subnets = parse_subnets("10.9.0.1/30").unwrap();
         assert!(allocate_addresses(&subnets, &["10.9.0.2/32".into()]).is_err());
+    }
+
+    #[test]
+    fn ensure_ipv6_appends_when_missing() {
+        // v4-only gets the default v6 appended.
+        assert_eq!(ensure_ipv6("10.8.0.1/24", "fd00:8::1/64"), "10.8.0.1/24, fd00:8::1/64");
+        // already dual-stack is untouched.
+        assert_eq!(ensure_ipv6("10.8.0.1/24, fd00:8::1/64", "fd00:9::1/64"), "10.8.0.1/24, fd00:8::1/64");
+        // v6-only is untouched.
+        assert_eq!(ensure_ipv6("fd00:8::1/64", "fd00:9::1/64"), "fd00:8::1/64");
+        assert!(!has_ipv6("10.8.0.1/24"));
+        assert!(has_ipv6("10.8.0.1/24, fd00::1/64"));
     }
 
     #[test]
