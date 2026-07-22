@@ -3,7 +3,9 @@
 
 use dioxus::prelude::*;
 
-use super::dto::{CurrentUser, InterfaceAccessView, InterfaceAdminView, PeerView, UserAdminView};
+use super::dto::{
+    CurrentUser, InterfaceAccessView, InterfaceAdminView, NewDeviceView, PeerView, UserAdminView,
+};
 use uuid::Uuid;
 
 #[server]
@@ -43,7 +45,7 @@ pub async fn my_devices() -> Result<Vec<PeerView>, ServerFnError> {
 }
 
 #[server]
-pub async fn create_my_device(interface_id: Uuid, name: String) -> Result<PeerView, ServerFnError> {
+pub async fn create_my_device(interface_id: Uuid, name: String) -> Result<NewDeviceView, ServerFnError> {
     let pool = crate::server_state::pool()?;
     let user = crate::web::user::current_user().await?;
     let uid = crate::web::user::current_user_id(&pool, &user).await?;
@@ -62,18 +64,25 @@ pub async fn create_my_device(interface_id: Uuid, name: String) -> Result<PeerVi
             return Err(ServerFnError::new(format!("device limit reached ({limit})")));
         }
     }
-    let peer = crate::store::create_peer(&pool, interface_id, Some(uid), &name).await.map_err(err)?;
+    let (peer, private_key) =
+        crate::store::create_peer(&pool, interface_id, Some(uid), &name).await.map_err(err)?;
     sync(&pool, interface_id).await?;
-    peer_view(&pool, peer, Some(user.email)).await
+    let config = crate::store::render_peer_config(&iface, &peer, &private_key);
+    Ok(NewDeviceView { peer: peer_view(&pool, peer, Some(user.email)).await?, config })
 }
 
 #[server]
-pub async fn regenerate_peer(id: Uuid) -> Result<PeerView, ServerFnError> {
+pub async fn regenerate_peer(id: Uuid) -> Result<NewDeviceView, ServerFnError> {
     let pool = crate::server_state::pool()?;
     authorize_peer(&pool, id).await?;
-    let peer = crate::store::regenerate_peer(&pool, id).await.map_err(err)?;
+    let (peer, private_key) = crate::store::regenerate_peer(&pool, id).await.map_err(err)?;
     sync(&pool, peer.interface_id).await?;
-    peer_view(&pool, peer, None).await
+    let iface = crate::store::get_interface(&pool, peer.interface_id)
+        .await
+        .map_err(err)?
+        .ok_or_else(|| ServerFnError::new("interface not found"))?;
+    let config = crate::store::render_peer_config(&iface, &peer, &private_key);
+    Ok(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config })
 }
 
 #[server]
@@ -84,6 +93,8 @@ pub async fn delete_peer(id: Uuid) -> Result<(), ServerFnError> {
     sync(&pool, peer.interface_id).await
 }
 
+/// Re-render an existing device's config. The private key is NOT stored, so it
+/// appears as a placeholder — regenerate to get a usable config.
 #[server]
 pub async fn peer_config_text(id: Uuid) -> Result<String, ServerFnError> {
     let pool = crate::server_state::pool()?;
@@ -92,7 +103,7 @@ pub async fn peer_config_text(id: Uuid) -> Result<String, ServerFnError> {
         .await
         .map_err(err)?
         .ok_or_else(|| ServerFnError::new("interface not found"))?;
-    Ok(crate::store::render_peer_config(&iface, &peer))
+    Ok(crate::store::render_peer_config(&iface, &peer, crate::store::PRIVATE_KEY_PLACEHOLDER))
 }
 
 // ── Admin: interfaces ─────────────────────────────────────────────────
@@ -245,18 +256,23 @@ pub async fn admin_create_device(
     user_id: Uuid,
     name: String,
     address: String,
-) -> Result<PeerView, ServerFnError> {
+) -> Result<NewDeviceView, ServerFnError> {
     let pool = crate::server_state::pool()?;
     require_admin(&pool).await?;
     let addr = address.trim();
-    let peer = if addr.is_empty() {
+    let (peer, private_key) = if addr.is_empty() {
         crate::store::create_peer(&pool, interface_id, Some(user_id), &name).await
     } else {
         crate::store::create_peer_with_address(&pool, interface_id, Some(user_id), &name, addr).await
     }
     .map_err(err)?;
     sync(&pool, interface_id).await?;
-    peer_view(&pool, peer, None).await
+    let iface = crate::store::get_interface(&pool, interface_id)
+        .await
+        .map_err(err)?
+        .ok_or_else(|| ServerFnError::new("interface not found"))?;
+    let config = crate::store::render_peer_config(&iface, &peer, &private_key);
+    Ok(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config })
 }
 
 #[server]

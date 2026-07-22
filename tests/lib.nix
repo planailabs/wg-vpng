@@ -92,9 +92,16 @@ pkgs.testers.runNixOSTest {
     addr = machine.succeed(f"echo '{peer}' | jq -r .address").strip()
     assert "10.8.0." in addr and "fd00:8::" in addr, addr
 
+    # The private key is returned once at creation, inside the config.
+    priv = machine.succeed(f"echo '{peer}' | jq -r .private_key").strip()
+    assert len(priv) == 44 and priv != "null", priv
+    createcfg = machine.succeed(f"echo '{peer}' | jq -r .config").strip()
+    assert priv in createcfg, "create response config must contain the private key"
+
     present(machine, pub)
     check_iface(machine)
 
+    # Re-fetching the config later must NOT reveal the private key (not stored).
     cfg = machine.succeed(
         f"curl -sf -X POST {auth} http://localhost:8080/api/v1/peers/{pid}/config | jq -r .config"
     )
@@ -102,6 +109,7 @@ pkgs.testers.runNixOSTest {
     assert "PrivateKey = " in cfg, cfg
     assert "Endpoint = vpn.example.com:51820" in cfg, cfg
     assert "fd00:8::" in cfg, cfg
+    assert priv not in cfg, "stored config must not expose the private key"
 
     regen = machine.succeed(
         f"curl -sf -X POST {auth} http://localhost:8080/api/v1/peers/{pid}/regenerate"

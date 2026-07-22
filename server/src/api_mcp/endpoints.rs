@@ -353,11 +353,39 @@ pub struct PeerCreateInput {
     pub address: Option<String>,
 }
 
+/// A created/regenerated peer, including the private key + rendered config —
+/// returned once (the private key is not stored).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CreatedPeer {
+    pub id: Uuid,
+    pub interface_id: Uuid,
+    pub user_id: Option<Uuid>,
+    pub name: String,
+    pub public_key: String,
+    pub address: String,
+    /// Shown once; never stored server-side.
+    pub private_key: String,
+    pub config: String,
+}
+
+fn created_peer(peer: &store::Peer, private_key: String, iface: &store::Interface) -> CreatedPeer {
+    CreatedPeer {
+        id: peer.id,
+        interface_id: peer.interface_id,
+        user_id: peer.user_id,
+        name: peer.name.clone(),
+        public_key: peer.public_key.clone(),
+        address: peer.address.clone(),
+        config: store::render_peer_config(iface, peer, &private_key),
+        private_key,
+    }
+}
+
 pub async fn peer_create(
     pool: PgPool,
     p: std::sync::Arc<Principal>,
     i: PeerCreateInput,
-) -> Result<store::Peer, ApiError> {
+) -> Result<CreatedPeer, ApiError> {
     p.require_admin()?;
     let iface = resolve_interface(&pool, i.interface_id).await?;
     let user_id = match &i.user_email {
@@ -365,13 +393,13 @@ pub async fn peer_create(
         None => None,
     };
     let name = i.name.unwrap_or_default();
-    let peer = match i.address.as_deref().filter(|a| !a.is_empty()) {
+    let (peer, private_key) = match i.address.as_deref().filter(|a| !a.is_empty()) {
         Some(addr) => store::create_peer_with_address(&pool, iface.id, user_id, &name, addr).await,
         None => store::create_peer(&pool, iface.id, user_id, &name).await,
     }
     .map_err(internal)?;
     sync(&pool, iface.id).await?;
-    Ok(peer)
+    Ok(created_peer(&peer, private_key, &iface))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -423,11 +451,15 @@ pub async fn peer_regenerate(
     pool: PgPool,
     p: std::sync::Arc<Principal>,
     i: PeerRegenerateInput,
-) -> Result<store::Peer, ApiError> {
+) -> Result<CreatedPeer, ApiError> {
     p.require_admin()?;
-    let peer = store::regenerate_peer(&pool, i.id).await.map_err(internal)?;
+    let (peer, private_key) = store::regenerate_peer(&pool, i.id).await.map_err(internal)?;
     sync(&pool, peer.interface_id).await?;
-    Ok(peer)
+    let iface = store::get_interface(&pool, peer.interface_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| ApiError::not_found("interface not found"))?;
+    Ok(created_peer(&peer, private_key, &iface))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -453,8 +485,9 @@ pub async fn peer_config(
         .await
         .map_err(internal)?
         .ok_or_else(|| ApiError::not_found("interface not found"))?;
+    // The private key isn't stored; re-rendered config uses a placeholder.
     Ok(ConfigOutput {
-        config: store::render_peer_config(&iface, &peer),
+        config: store::render_peer_config(&iface, &peer, store::PRIVATE_KEY_PLACEHOLDER),
     })
 }
 

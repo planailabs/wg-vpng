@@ -128,11 +128,9 @@ fn InterfaceSection(
                         let name = new_name();
                         async move {
                             match create_my_device(iid, name).await {
-                                Ok(p) => {
+                                Ok(v) => {
                                     new_name.set(String::new());
-                                    if let Ok(cfg) = peer_config_text(p.id).await {
-                                        on_show.call((p.id, cfg));
-                                    }
+                                    on_show.call((v.peer.id, v.config));
                                     on_change.call(());
                                 }
                                 Err(e) => on_error.call(e.to_string()),
@@ -193,13 +191,7 @@ fn DeviceRow(
                 variant: ButtonVariant::Secondary,
                 onclick: move |_| async move {
                     match regenerate_peer(id).await {
-                        Ok(_) => {
-                            match peer_config_text(id).await {
-                                Ok(cfg) => on_show.call((id, cfg)),
-                                Err(e) => on_error.call(e.to_string()),
-                            }
-                            on_change.call(());
-                        }
+                        Ok(v) => { on_show.call((id, v.config)); on_change.call(()); }
                         Err(e) => on_error.call(e.to_string()),
                     }
                 },

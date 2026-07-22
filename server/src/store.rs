@@ -48,8 +48,9 @@ pub struct Peer {
     pub interface_id: Uuid,
     pub user_id: Option<Uuid>,
     pub name: String,
-    pub private_key: String,
     pub public_key: String,
+    /// Server-side secret used to configure the peer (kept). The client's
+    /// PRIVATE key is never stored — it is generated + returned once.
     pub preshared_key: Option<String>,
     pub address: String,
 }
@@ -66,8 +67,7 @@ pub struct User {
 
 const IFACE_COLS: &str = "id, name, listen_port, address, private_key, public_key, endpoint, \
     dns, allowed_ips, keepalive, device_limit, access_patterns, backend, last_error";
-const PEER_COLS: &str =
-    "id, interface_id, user_id, name, private_key, public_key, preshared_key, address";
+const PEER_COLS: &str = "id, interface_id, user_id, name, public_key, preshared_key, address";
 const USER_COLS: &str = "id, email, name, is_admin, banned, access_revoked";
 
 /// Default IPv6 pools appended when an interface lacks IPv6 (IPv6 is
@@ -312,12 +312,14 @@ pub async fn count_user_devices_on_interface(
 
 /// Create a peer on `interface_id`: generate a keypair + PSK and allocate the
 /// next free tunnel address in each of the interface's subnets (dual-stack).
+/// Returns `(peer, private_key)` — the private key is NOT stored; the caller
+/// shows it to the user once.
 pub async fn create_peer(
     pool: &PgPool,
     interface_id: Uuid,
     user_id: Option<Uuid>,
     name: &str,
-) -> Result<Peer> {
+) -> Result<(Peer, String)> {
     let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
     let subnets = wg::parse_subnets(&iface.address).map_err(anyhow::Error::msg)?;
     let taken: Vec<String> =
@@ -326,61 +328,63 @@ pub async fn create_peer(
     insert_peer(pool, interface_id, user_id, name, &address).await
 }
 
-/// Create a peer with an explicit address/subnet spec (admin only). The spec is
-/// one or more CIDRs of any prefix length — how a device is granted a whole
-/// routed subnet (e.g. an IPv6 `/64`).
+/// Create a peer with an explicit address/subnet spec (admin only). Returns
+/// `(peer, private_key)`.
 pub async fn create_peer_with_address(
     pool: &PgPool,
     interface_id: Uuid,
     user_id: Option<Uuid>,
     name: &str,
     address_spec: &str,
-) -> Result<Peer> {
+) -> Result<(Peer, String)> {
     let address = wg::validate_address_spec(address_spec).map_err(anyhow::Error::msg)?;
     insert_peer(pool, interface_id, user_id, name, &address).await
 }
 
+/// Insert a peer, storing only its PUBLIC key + PSK. Returns `(peer,
+/// private_key)`; the private key is generated here and never persisted.
 async fn insert_peer(
     pool: &PgPool,
     interface_id: Uuid,
     user_id: Option<Uuid>,
     name: &str,
     address: &str,
-) -> Result<Peer> {
+) -> Result<(Peer, String)> {
     let kp = wg::generate_keypair();
     let psk = wg::generate_preshared_key();
-    sqlx::query_as::<_, Peer>(&format!(
+    let peer = sqlx::query_as::<_, Peer>(&format!(
         "INSERT INTO wg_peers \
-         (interface_id, user_id, name, private_key, public_key, preshared_key, address) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING {PEER_COLS}"
+         (interface_id, user_id, name, public_key, preshared_key, address) \
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING {PEER_COLS}"
     ))
     .bind(interface_id)
     .bind(user_id)
     .bind(name)
-    .bind(&kp.private_key)
     .bind(&kp.public_key)
     .bind(&psk)
     .bind(address)
     .fetch_one(pool)
     .await
-    .context("insert peer")
+    .context("insert peer")?;
+    Ok((peer, kp.private_key))
 }
 
-/// Replace a peer's keypair (and preshared key), keeping its address.
-pub async fn regenerate_peer(pool: &PgPool, peer_id: Uuid) -> Result<Peer> {
+/// Replace a peer's keypair (and preshared key), keeping its address. Returns
+/// `(peer, new_private_key)` — the new private key is not stored.
+pub async fn regenerate_peer(pool: &PgPool, peer_id: Uuid) -> Result<(Peer, String)> {
     let kp = wg::generate_keypair();
     let psk = wg::generate_preshared_key();
-    sqlx::query_as::<_, Peer>(&format!(
-        "UPDATE wg_peers SET private_key=$2, public_key=$3, preshared_key=$4 \
+    let peer = sqlx::query_as::<_, Peer>(&format!(
+        "UPDATE wg_peers SET public_key=$2, preshared_key=$3 \
          WHERE id=$1 RETURNING {PEER_COLS}"
     ))
     .bind(peer_id)
-    .bind(&kp.private_key)
     .bind(&kp.public_key)
     .bind(&psk)
     .fetch_one(pool)
     .await
-    .context("regenerate peer")
+    .context("regenerate peer")?;
+    Ok((peer, kp.private_key))
 }
 
 /// Rename a peer (device). Cosmetic — no backend change needed.
@@ -562,10 +566,17 @@ pub async fn sync_all_best_effort(pool: &PgPool) {
     }
 }
 
-/// Render the client `.conf` for a peer against its interface.
-pub fn render_peer_config(iface: &Interface, peer: &Peer) -> String {
+/// Placeholder for the private key when re-rendering an existing device's
+/// config (the real private key was shown once at creation and isn't stored).
+pub const PRIVATE_KEY_PLACEHOLDER: &str =
+    "<not stored — regenerate this device to get a new key>";
+
+/// Render the client `.conf` for a peer. `private_key` is supplied by the
+/// caller — the freshly generated key at create/regenerate time, or
+/// [`PRIVATE_KEY_PLACEHOLDER`] when re-showing an existing device.
+pub fn render_peer_config(iface: &Interface, peer: &Peer, private_key: &str) -> String {
     wg::render_client_config(&wg::ClientConfig {
-        private_key: &peer.private_key,
+        private_key,
         address: &peer.address,
         dns: iface.dns.as_deref(),
         server_public_key: &iface.public_key,
@@ -637,15 +648,17 @@ mod tests {
         sqlx::migrate!().run(&pool).await.unwrap();
 
         let iface = mk_iface(&pool, &["*".into()], "10.8.0.1/24, fd00:8::1/64").await;
-        let p = create_peer(&pool, iface.id, None, "dual").await.unwrap();
+        let (p, privkey) = create_peer(&pool, iface.id, None, "dual").await.unwrap();
         assert_eq!(p.address, "10.8.0.2/32, fd00:8::2/128");
+        assert_eq!(privkey.len(), 44); // returned once, not stored
 
-        let sub = create_peer_with_address(&pool, iface.id, None, "site", "fd00:beef::/64")
+        let (sub, _) = create_peer_with_address(&pool, iface.id, None, "site", "fd00:beef::/64")
             .await
             .unwrap();
         assert_eq!(sub.address, "fd00:beef::/64");
 
-        let cfg = render_peer_config(&iface, &p);
+        let cfg = render_peer_config(&iface, &p, &privkey);
+        assert!(cfg.contains(&format!("PrivateKey = {privkey}")));
         assert!(cfg.contains("Address = 10.8.0.2/32, fd00:8::2/128"));
     }
 

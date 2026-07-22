@@ -22,6 +22,14 @@ pub struct PeerView {
     pub owner_email: Option<String>,
 }
 
+/// A freshly created/regenerated device plus its full config (with the private
+/// key) — shown once; the private key is never stored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewDeviceView {
+    pub peer: PeerView,
+    pub config: String,
+}
+
 /// An interface a user can access, with their usage on it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InterfaceAccessView {

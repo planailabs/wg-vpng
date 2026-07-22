@@ -198,7 +198,7 @@ fn DeviceButtons(id: Uuid, on_change: EventHandler<()>, on_error: EventHandler<S
             variant: ButtonVariant::Secondary,
             onclick: move |_| async move {
                 match regenerate_peer(id).await {
-                    Ok(_) => on_change.call(()),
+                    Ok(v) => { config.set(Some(v.config)); on_change.call(()); }
                     Err(e) => on_error.call(e.to_string()),
                 }
             },
