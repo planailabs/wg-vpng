@@ -22,9 +22,11 @@ pub fn Admin() -> Element {
     let mut error = use_signal(|| Option::<String>::None);
 
     rsx! {
-        h2 { class: "text-xl font-semibold text-fg-strong mb-1", "Users" }
-        p { class: "text-fg-muted text-sm mb-6",
-            "Manage each user's devices and access. Revoking drops a user's devices from the VPN; banning also blocks login; deleting removes the user and all their devices."
+        div { class: "mb-8",
+            h2 { class: "text-2xl font-semibold text-fg-strong tracking-tight", "Users" }
+            p { class: "text-fg-muted text-sm mt-1",
+                "Manage each user's devices and access. Revoking drops a user's devices from the VPN; banning also blocks login; deleting removes the user and all their devices."
+            }
         }
 
         if let Some(e) = error() {

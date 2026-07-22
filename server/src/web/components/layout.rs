@@ -1,5 +1,7 @@
-//! App shell: sidebar nav + topbar (theme/language/logout) around the routed
-//! page outlet.
+//! App shell: a full-width top bar with a centered inner row (brand + tab nav +
+//! user controls) over a centered, max-width content column. Deliberately
+//! enterprise-flavoured — top navigation, generous whitespace, a single
+//! focused content column rather than a wide dashboard sprawl.
 
 use dioxus::prelude::*;
 use plan_ai_design::{LanguagePicker, ThemeToggle};
@@ -10,42 +12,78 @@ use crate::web::server_fns::get_current_user;
 #[component]
 pub fn Layout() -> Element {
     let user = use_server_future(get_current_user)?;
-    let (name, is_admin) = match &*user.read() {
-        Some(Ok(u)) => (u.name.clone(), u.is_admin),
-        _ => (String::new(), false),
+    let (name, email, is_admin) = match &*user.read() {
+        Some(Ok(u)) => (u.name.clone(), u.email.clone(), u.is_admin),
+        _ => (String::new(), String::new(), false),
     };
-    let display = if name.is_empty() { "".to_string() } else { name };
+    let display = if name.is_empty() { email.clone() } else { name };
+    let initial = display
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string());
 
     rsx! {
-        div { class: "h-screen h-dvh w-full flex overflow-hidden",
-            nav { class: "shrink-0 w-56 border-r border-line bg-surface flex flex-col p-4 gap-1",
-                div { class: "text-lg font-semibold text-fg-strong mb-4", "wg-vpng" }
-                NavLink { to: Route::MyConfig {}, label: "My devices" }
-                if is_admin {
-                    NavLink { to: Route::Interfaces {}, label: "Interface" }
-                    NavLink { to: Route::Admin {}, label: "Users" }
+        div { class: "min-h-screen h-dvh w-full flex flex-col bg-bg overflow-hidden",
+
+            // ── Top bar ──────────────────────────────────────────────
+            header { class: "shrink-0 border-b border-line bg-surface",
+                div { class: "max-w-6xl mx-auto px-6 h-16 flex items-center gap-8",
+
+                    // Brand mark
+                    div { class: "flex items-center gap-2.5 shrink-0",
+                        div {
+                            class: "h-9 w-9 rounded-lg bg-brand text-fg-invert flex items-center justify-center font-bold text-sm shadow-card",
+                            "wg"
+                        }
+                        div { class: "leading-tight hidden sm:block",
+                            div { class: "font-semibold text-fg-strong text-sm", "WireGuard VPN" }
+                            div { class: "text-fg-faint text-[11px] tracking-wide uppercase", "Generator" }
+                        }
+                    }
+
+                    // Primary navigation (tabs)
+                    nav { class: "flex items-stretch gap-1 h-full",
+                        NavTab { to: Route::MyConfig {}, label: "My devices" }
+                        if is_admin {
+                            NavTab { to: Route::Interfaces {}, label: "Interface" }
+                            NavTab { to: Route::Admin {}, label: "Users" }
+                        }
+                    }
+
+                    div { class: "flex-1" }
+
+                    // User controls
+                    div { class: "flex items-center gap-2",
+                        LanguagePicker {}
+                        ThemeToggle {}
+                        div { class: "w-px h-6 bg-line mx-1" }
+                        if !display.is_empty() {
+                            div { class: "flex items-center gap-2",
+                                div {
+                                    class: "h-8 w-8 rounded-full bg-surface-3 text-fg-strong flex items-center justify-center text-xs font-semibold",
+                                    "{initial}"
+                                }
+                                span { class: "text-sm text-fg-muted hidden md:inline max-w-[12rem] truncate", "{display}" }
+                            }
+                        }
+                        a {
+                            class: "text-sm text-fg-muted hover:text-danger px-2 py-1 rounded-md transition-colors",
+                            href: "/auth/logout",
+                            title: "Sign out",
+                            "Sign out"
+                        }
+                    }
                 }
             }
 
-            div { class: "flex-1 flex flex-col min-w-0 overflow-hidden",
-                header { class: "shrink-0 h-14 border-b border-line flex items-center px-6 gap-3",
-                    h1 { class: "text-base font-semibold text-fg", "WireGuard VPN generator" }
-                    div { class: "flex-1" }
-                    LanguagePicker {}
-                    ThemeToggle {}
-                    if !display.is_empty() {
-                        span { class: "text-sm text-fg-muted ml-2", "{display}" }
-                    }
-                    a {
-                        class: "text-sm text-fg-muted hover:text-danger ml-2",
-                        href: "/auth/logout",
-                        "Logout"
-                    }
-                }
-
-                main { class: "flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8",
+            // ── Centered content column ─────────────────────────────
+            main { class: "flex-1 min-w-0 overflow-y-auto",
+                div { class: "max-w-5xl mx-auto px-6 py-10 w-full",
                     SuspenseBoundary {
-                        fallback: |_| rsx! { div { class: "text-fg-muted", "Loading…" } },
+                        fallback: |_| rsx! {
+                            div { class: "flex items-center justify-center py-24 text-fg-muted text-sm", "Loading…" }
+                        },
                         Outlet::<Route> {}
                     }
                 }
@@ -55,12 +93,12 @@ pub fn Layout() -> Element {
 }
 
 #[component]
-fn NavLink(to: Route, label: &'static str) -> Element {
+fn NavTab(to: Route, label: &'static str) -> Element {
     rsx! {
         Link {
             to,
-            class: "px-3 py-2 rounded-md text-sm text-fg hover:bg-surface-2",
-            active_class: "bg-surface-2 text-fg-strong font-medium",
+            class: "flex items-center px-3 text-sm font-medium text-fg-muted hover:text-fg-strong border-b-2 border-transparent -mb-px transition-colors",
+            active_class: "!text-brand !border-brand",
             "{label}"
         }
     }

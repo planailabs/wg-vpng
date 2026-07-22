@@ -10,10 +10,13 @@ pub fn Interfaces() -> Element {
     let iface = use_server_future(get_interface)?;
 
     rsx! {
-        h2 { class: "text-xl font-semibold text-fg-strong mb-6", "Interface" }
+        div { class: "mb-8",
+            h2 { class: "text-2xl font-semibold text-fg-strong tracking-tight", "Interface" }
+            p { class: "text-fg-muted text-sm mt-1", "The server-side WireGuard interface clients connect to." }
+        }
         match &*iface.read() {
             Some(Ok(i)) => rsx! {
-                Card { class: "p-4 max-w-xl",
+                Card { class: "p-6 max-w-xl mx-auto",
                     Row { label: "Name", value: i.name.clone() }
                     Row { label: "Address", value: i.address.clone() }
                     Row { label: "Listen port", value: i.listen_port.to_string() }

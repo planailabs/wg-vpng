@@ -48,9 +48,11 @@ pub fn MyConfig() -> Element {
     };
 
     rsx! {
-        h2 { class: "text-xl font-semibold text-fg-strong mb-1", "My VPN configurations" }
-        p { class: "text-fg-muted text-sm mb-6",
-            "Generate a WireGuard configuration to reach the company network. Regenerating replaces the key and invalidates the old config."
+        div { class: "mb-8",
+            h2 { class: "text-2xl font-semibold text-fg-strong tracking-tight", "My devices" }
+            p { class: "text-fg-muted text-sm mt-1",
+                "Generate a WireGuard configuration to reach the company network. Regenerating replaces the key and invalidates the old config."
+            }
         }
 
         if let Some(e) = error() {
