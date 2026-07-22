@@ -75,10 +75,13 @@
 
         # nixpkgs.lib (not pkgs.lib): evaluating pkgs for unsupported systems
         # throws, and `nix flake show` walks every system.
-        checks = nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
-          # NixOS VM test: postgres + wg-vpng with the self-managed WireGuard
-          # backend; exercises interface + peer creation end to end.
-          integration = pkgs.callPackage ./tests/integration.nix { };
-        };
+        #
+        # One generic NixOS VM test (tests/lib.nix) instantiated for every
+        # backend: self-managed, NetworkManager, and MikroTik (against a fake
+        # RouterOS REST server). Run e.g.:
+        #   nix build .#checks.x86_64-linux.integration-mikrotik -L
+        checks = nixpkgs.lib.optionalAttrs (system == "x86_64-linux") (
+          import ./tests/backends.nix { inherit pkgs; }
+        );
       });
 }
