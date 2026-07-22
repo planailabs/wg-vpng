@@ -34,7 +34,8 @@ pub struct Interface {
     pub keepalive: i32,
     /// Max devices per user on this interface; None = unlimited.
     pub device_limit: Option<i32>,
-    /// Access patterns (globs / literal emails; `*` = everyone).
+    /// Access patterns (globs / literal emails; `*` = everyone). Stored as jsonb.
+    #[sqlx(json)]
     pub access_patterns: Vec<String>,
     /// Per-interface backend (secrets encrypted). Not exposed via serialize.
     #[serde(skip_serializing)]
@@ -154,7 +155,7 @@ pub async fn create_interface(
     .bind(&allowed_ips)
     .bind(keepalive)
     .bind(device_limit)
-    .bind(access_patterns)
+    .bind(sqlx::types::Json(access_patterns))
     .bind(sqlx::types::Json(backend))
     .fetch_one(pool)
     .await
@@ -254,7 +255,7 @@ pub async fn update_interface(
     .bind(&new_allowed)
     .bind(new_keepalive)
     .bind(new_limit)
-    .bind(&new_patterns)
+    .bind(sqlx::types::Json(&new_patterns))
     .bind(sqlx::types::Json(new_backend))
     .fetch_one(pool)
     .await

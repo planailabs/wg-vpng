@@ -132,7 +132,7 @@ pub async fn admin_create_interface(
     allowed_ips: String,
     keepalive: i32,
     device_limit: Option<i32>,
-    access_patterns: String,
+    access_patterns: Vec<String>,
     backend_kind: String,
     mikrotik_url: String,
     mikrotik_username: String,
@@ -142,7 +142,7 @@ pub async fn admin_create_interface(
     let pool = crate::server_state::pool()?;
     require_admin(&pool).await?;
     let backend = build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure)?;
-    let patterns = parse_patterns(&access_patterns);
+    let patterns = clean_patterns(access_patterns);
     let iface = crate::store::create_interface(
         &pool,
         &name,
@@ -173,7 +173,7 @@ pub async fn admin_update_interface(
     allowed_ips: String,
     keepalive: i32,
     device_limit: Option<i32>,
-    access_patterns: String,
+    access_patterns: Vec<String>,
     backend_kind: String,
     mikrotik_url: String,
     mikrotik_username: String,
@@ -185,7 +185,7 @@ pub async fn admin_update_interface(
     // The backend *type* is immutable (enforced in the store); credentials may be
     // updated. A blank MikroTik password keeps the stored one (store handles it).
     let backend = Some(build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure)?);
-    let patterns = parse_patterns(&access_patterns);
+    let patterns = clean_patterns(access_patterns);
     crate::store::update_interface(
         &pool,
         id,
@@ -327,11 +327,12 @@ fn opt(s: &str) -> Option<&str> {
 }
 
 #[cfg(feature = "server")]
-fn parse_patterns(s: &str) -> Vec<String> {
-    s.split(['\n', ',', ' ', '\t'])
-        .map(str::trim)
+/// Trim each pattern row from the UI and drop blanks (empty rows the admin
+/// added but didn't fill in).
+fn clean_patterns(rows: Vec<String>) -> Vec<String> {
+    rows.into_iter()
+        .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
-        .map(str::to_string)
         .collect()
 }
 

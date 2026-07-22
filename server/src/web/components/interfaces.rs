@@ -101,7 +101,7 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
     let mut allowed_ips = use_signal(|| "10.8.0.0/24, fd00:8::/64".to_string());
     let mut keepalive = use_signal(|| "25".to_string());
     let mut device_limit = use_signal(String::new);
-    let mut patterns = use_signal(|| "*".to_string());
+    let patterns = use_signal(|| vec!["*".to_string()]);
     let kind = use_signal(|| "self-managed".to_string());
     let mk_url = use_signal(String::new);
     let mk_user = use_signal(String::new);
@@ -152,8 +152,7 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
             }
             div { class: "mt-3",
                 label { class: "label text-sm text-fg-muted", {t!("if-field-patterns")} }
-                textarea { class: "input w-full text-sm font-mono", rows: "2", value: "{patterns}", oninput: move |e| patterns.set(e.value()) }
-                p { class: "text-fg-faint text-xs mt-1", {t!("if-patterns-help")} }
+                PatternsEditor { patterns }
             }
             div { class: "mt-3",
                 BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, pass_placeholder: t!("if-field-mikrotik-password") }
@@ -176,6 +175,39 @@ fn Field(label: String, value: Signal<String>, placeholder: String) -> Element {
     }
 }
 
+/// Row-based editor for access patterns: one input per pattern, plus add/remove.
+/// An empty list means "nobody" (blank rows are dropped server-side).
+#[component]
+fn PatternsEditor(patterns: Signal<Vec<String>>) -> Element {
+    rsx! {
+        div { class: "flex flex-col gap-2",
+            for (idx, val) in patterns().into_iter().enumerate() {
+                div { key: "{idx}", class: "flex items-center gap-2",
+                    input {
+                        class: "input flex-1 text-sm font-mono",
+                        placeholder: "*",
+                        value: "{val}",
+                        oninput: move |e| { patterns.with_mut(|p| { if let Some(s) = p.get_mut(idx) { *s = e.value(); } }); },
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| { patterns.with_mut(|p| { if idx < p.len() { p.remove(idx); } }); },
+                        {t!("action-remove")}
+                    }
+                }
+            }
+            div {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| { patterns.with_mut(|p| p.push(String::new())); },
+                    {t!("action-add-pattern")}
+                }
+            }
+            p { class: "text-fg-faint text-xs", {t!("if-patterns-help")} }
+        }
+    }
+}
+
 #[component]
 fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
     let id = iface.id;
@@ -186,7 +218,7 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
     let mut allowed_ips = use_signal(|| iface.allowed_ips.clone());
     let mut keepalive = use_signal(|| iface.keepalive.to_string());
     let mut device_limit = use_signal(|| iface.device_limit.map(|l| l.to_string()).unwrap_or_default());
-    let mut patterns = use_signal(|| iface.access_patterns.join("\n"));
+    let patterns = use_signal(|| iface.access_patterns.clone());
     let kind = use_signal(|| iface.backend_kind.clone());
     let mk_url = use_signal(|| iface.mikrotik_url.clone().unwrap_or_default());
     let mk_user = use_signal(|| iface.mikrotik_username.clone().unwrap_or_default());
@@ -268,7 +300,7 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
                     }
                     div {
                         label { class: "label text-sm text-fg-muted", {t!("if-field-patterns")} }
-                        textarea { class: "input w-full text-sm font-mono", rows: "2", value: "{patterns}", oninput: move |e| patterns.set(e.value()) }
+                        PatternsEditor { patterns }
                     }
                     BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, pass_placeholder: t!("if-field-mikrotik-password-keep"), lock_kind: true }
                     p { class: "text-fg-faint text-xs", {t!("if-immutable-note-edit")} }
