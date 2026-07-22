@@ -53,16 +53,10 @@ async fn init_server() {
     web::auth::install_resolver(pool.clone());
 }
 
-/// plan-ai-html 404 for anything the app + API routers don't match.
+/// plan-ai-html 404 for browser requests the app + API routers don't match.
 #[cfg(all(feature = "server", feature = "webui"))]
-async fn not_found(headers: axum::http::HeaderMap) -> axum::response::Response {
+fn not_found(lang: plan_ai_html::Lang) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let lang = plan_ai_html::Lang::from_accept_language(
-        headers
-            .get("accept-language")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or(""),
-    );
     let html = plan_ai_html::error_page(lang, "not-found-title", "not-found-body");
     (
         axum::http::StatusCode::NOT_FOUND,
@@ -143,14 +137,39 @@ fn main() {
             let api_http = registry.http_router(pool.clone());
             let mcp_service = registry.mcp_service(pool);
 
-            let router = axum::Router::new()
+            // Merge the API into the Dioxus router so its SSR fallback stays
+            // intact (deep-linked client routes must render). A dispatch
+            // wrapper renders a plan-ai-html 404 for browser requests the app
+            // genuinely doesn't match.
+            let app_router = web_router
                 .merge(api_http)
                 .route_service("/mcp", mcp_service.clone())
-                .route_service("/mcp/", mcp_service)
-                .merge(web_router)
-                .fallback(not_found);
+                .route_service("/mcp/", mcp_service);
 
-            Ok(router)
+            use tower::ServiceExt;
+            let dispatch = tower::service_fn(move |req: axum::extract::Request| {
+                let app = app_router.clone();
+                async move {
+                    let wants_html = req
+                        .headers()
+                        .get(axum::http::header::ACCEPT)
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|a| a.contains("text/html"));
+                    let lang = plan_ai_html::Lang::from_accept_language(
+                        req.headers()
+                            .get("accept-language")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or(""),
+                    );
+                    let resp = app.oneshot(req).await.expect("router is infallible");
+                    if wants_html && resp.status() == axum::http::StatusCode::NOT_FOUND {
+                        return Ok::<_, std::convert::Infallible>(not_found(lang));
+                    }
+                    Ok(resp)
+                }
+            });
+
+            Ok(axum::Router::new().fallback_service(dispatch))
         });
     }
 

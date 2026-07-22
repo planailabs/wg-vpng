@@ -25,6 +25,7 @@ pub fn generate_keypair() -> KeyPair {
 
 /// Derive the public key for an existing base64 private key (used when
 /// importing a key or validating stored state).
+#[allow(dead_code)] // public helper + exercised by tests
 pub fn public_from_private(private_b64: &str) -> Result<String, String> {
     let bytes = B64
         .decode(private_b64.trim())
