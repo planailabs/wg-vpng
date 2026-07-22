@@ -30,6 +30,8 @@ pub struct PeerView {
 pub struct NewDeviceView {
     pub peer: PeerView,
     pub config: String,
+    /// Scannable QR (SVG) of the config for the WireGuard mobile app.
+    pub qr_svg: String,
 }
 
 /// An interface a user can access, with their usage on it.

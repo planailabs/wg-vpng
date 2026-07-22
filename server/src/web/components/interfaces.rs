@@ -7,6 +7,7 @@ use dioxus_i18n::t;
 use plan_ai_design::{Alert, AlertVariant, Button, ButtonVariant, Card};
 use uuid::Uuid;
 
+use crate::web::components::ui::PageHeader;
 use crate::web::dto::InterfaceAdminView;
 use crate::web::server_fns::{
     admin_create_interface, admin_delete_interface, admin_list_interfaces, admin_update_interface,
@@ -22,10 +23,7 @@ pub fn Interfaces() -> Element {
     let mut error = use_signal(|| Option::<String>::None);
 
     rsx! {
-        div { class: "mb-8",
-            h2 { class: "text-2xl font-semibold text-fg-strong tracking-tight", {t!("interfaces-title")} }
-            p { class: "text-fg-muted text-sm mt-1", {t!("interfaces-subtitle")} }
-        }
+        PageHeader { eyebrow: t!("nav-interface"), title: t!("interfaces-title"), subtitle: t!("interfaces-subtitle") }
 
         if let Some(e) = error() {
             Alert { variant: AlertVariant::Danger, class: "mb-4", "{e}" }

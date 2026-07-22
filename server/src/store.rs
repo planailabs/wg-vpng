@@ -608,6 +608,23 @@ pub async fn sync_all_best_effort(pool: &PgPool) {
 pub const PRIVATE_KEY_PLACEHOLDER: &str =
     "<not stored — regenerate this device to get a new key>";
 
+/// Render a scannable QR code (SVG) of a WireGuard client config. WireGuard's
+/// mobile apps import the whole `.conf` text from the QR, so we encode the
+/// config verbatim.
+pub fn config_qr_svg(config: &str) -> String {
+    match qrcode::QrCode::new(config.as_bytes()) {
+        Ok(code) => code
+            .render::<qrcode::render::svg::Color>()
+            .min_dimensions(220, 220)
+            .quiet_zone(true)
+            .dark_color(qrcode::render::svg::Color("#111827"))
+            .light_color(qrcode::render::svg::Color("#ffffff"))
+            .build(),
+        // Config too large for a QR (very unusual) — return nothing; UI hides it.
+        Err(_) => String::new(),
+    }
+}
+
 /// Render the client `.conf` for a peer. `private_key` is supplied by the
 /// caller — the freshly generated key at create/regenerate time, or
 /// [`PRIVATE_KEY_PLACEHOLDER`] when re-showing an existing device.

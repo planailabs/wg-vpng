@@ -4,6 +4,8 @@
 common-loading = Wird geladen…
 action-generate = Erstellen
 action-copy = Kopieren
+action-download = Herunterladen
+devices-scan-hint = Scanne den QR-Code mit der WireGuard-App oder kopiere/lade die Konfiguration herunter. Jetzt speichern — sie wird nicht erneut angezeigt.
 action-show-config = Konfiguration anzeigen
 action-regenerate = Neu erzeugen
 action-delete = Löschen

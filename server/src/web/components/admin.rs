@@ -8,11 +8,11 @@ use dioxus_i18n::t;
 use plan_ai_design::{Alert, AlertVariant, Badge, BadgeVariant, Button, ButtonVariant, Card};
 use uuid::Uuid;
 
+use crate::web::components::ui::{ConfigPanel, PageHeader};
 use crate::web::dto::UserAdminView;
 use crate::web::server_fns::{
     admin_create_device, admin_delete_user, admin_list_interfaces, admin_list_users,
-    admin_set_banned, admin_set_revoked, admin_user_devices, delete_peer, peer_config_text,
-    regenerate_peer,
+    admin_set_banned, admin_set_revoked, admin_user_devices, delete_peer, regenerate_peer,
 };
 
 #[component]
@@ -32,10 +32,7 @@ pub fn Admin() -> Element {
     };
 
     rsx! {
-        div { class: "mb-8",
-            h2 { class: "text-2xl font-semibold text-fg-strong tracking-tight", {t!("users-title")} }
-            p { class: "text-fg-muted text-sm mt-1", {t!("users-subtitle")} }
-        }
+        PageHeader { eyebrow: t!("nav-users"), title: t!("users-title"), subtitle: t!("users-subtitle") }
 
         if let Some(e) = error() {
             Alert { variant: AlertVariant::Danger, class: "mb-4", "{e}" }
@@ -78,7 +75,7 @@ fn UserCard(
     let mut new_device = use_signal(String::new);
     let mut new_address = use_signal(String::new);
     let mut gen_key = use_signal(|| false);
-    let mut created_config = use_signal(|| Option::<String>::None);
+    let mut created_config = use_signal(|| Option::<(String, String)>::None);
     let mut sel_iface = use_signal(|| ifaces.first().map(|(id, _)| id.to_string()).unwrap_or_default());
 
     rsx! {
@@ -159,7 +156,7 @@ fn UserCard(
                                         Ok(v) => {
                                             new_device.set(String::new());
                                             new_address.set(String::new());
-                                            if let Some(nd) = v { created_config.set(Some(nd.config)); }
+                                            if let Some(nd) = v { created_config.set(Some((nd.config, nd.qr_svg))); }
                                             local += 1;
                                             on_change.call(());
                                         }
@@ -170,8 +167,8 @@ fn UserCard(
                             {t!("action-add-device")}
                         }
                     }
-                    if let Some(c) = created_config() {
-                        pre { class: "text-xs bg-surface-2 rounded-md p-2 mb-2 overflow-x-auto whitespace-pre", "{c}" }
+                    if let Some((config, qr_svg)) = created_config() {
+                        ConfigPanel { config, qr_svg }
                     }
                 }
 
@@ -200,23 +197,13 @@ fn UserCard(
 
 #[component]
 fn DeviceButtons(id: Uuid, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
-    let mut config = use_signal(|| Option::<String>::None);
+    let mut config = use_signal(|| Option::<(String, String)>::None);
     rsx! {
         Button {
             variant: ButtonVariant::Secondary,
             onclick: move |_| async move {
-                match peer_config_text(id).await {
-                    Ok(c) => config.set(Some(c)),
-                    Err(e) => on_error.call(e.to_string()),
-                }
-            },
-            {t!("action-config")}
-        }
-        Button {
-            variant: ButtonVariant::Secondary,
-            onclick: move |_| async move {
                 match regenerate_peer(id).await {
-                    Ok(v) => { config.set(Some(v.config)); on_change.call(()); }
+                    Ok(v) => { config.set(Some((v.config, v.qr_svg))); on_change.call(()); }
                     Err(e) => on_error.call(e.to_string()),
                 }
             },
@@ -232,9 +219,9 @@ fn DeviceButtons(id: Uuid, on_change: EventHandler<()>, on_error: EventHandler<S
             },
             {t!("action-delete")}
         }
-        if let Some(c) = config() {
+        if let Some((cfg, qr)) = config() {
             div { class: "w-full",
-                pre { class: "text-xs bg-surface-2 rounded-md p-2 mt-1 overflow-x-auto whitespace-pre", "{c}" }
+                ConfigPanel { config: cfg, qr_svg: qr }
             }
         }
     }

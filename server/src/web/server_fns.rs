@@ -68,7 +68,8 @@ pub async fn create_my_device(interface_id: Uuid, name: String) -> Result<NewDev
         crate::store::create_peer(&pool, interface_id, Some(uid), &name).await.map_err(err)?;
     sync(&pool, interface_id).await?;
     let config = crate::store::render_peer_config(&iface, &peer, &private_key);
-    Ok(NewDeviceView { peer: peer_view(&pool, peer, Some(user.email)).await?, config })
+    let qr_svg = crate::store::config_qr_svg(&config);
+    Ok(NewDeviceView { peer: peer_view(&pool, peer, Some(user.email)).await?, config, qr_svg })
 }
 
 #[server]
@@ -82,7 +83,8 @@ pub async fn regenerate_peer(id: Uuid) -> Result<NewDeviceView, ServerFnError> {
         .map_err(err)?
         .ok_or_else(|| ServerFnError::new("interface not found"))?;
     let config = crate::store::render_peer_config(&iface, &peer, &private_key);
-    Ok(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config })
+    let qr_svg = crate::store::config_qr_svg(&config);
+    Ok(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config, qr_svg })
 }
 
 #[server]
@@ -284,7 +286,8 @@ pub async fn admin_create_device(
         .map_err(err)?
         .ok_or_else(|| ServerFnError::new("interface not found"))?;
     let config = crate::store::render_peer_config(&iface, &peer, &private_key);
-    Ok(Some(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config }))
+    let qr_svg = crate::store::config_qr_svg(&config);
+    Ok(Some(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config, qr_svg }))
 }
 
 #[server]
