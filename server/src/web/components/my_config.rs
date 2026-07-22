@@ -20,8 +20,6 @@ pub fn MyConfig() -> Element {
     let mut shown = use_signal(|| Option::<(Uuid, String)>::None);
     let mut error = use_signal(|| Option::<String>::None);
 
-    let reload = move || refresh.with_mut(|r| *r += 1);
-
     let create = move |_| {
         let name = new_name();
         async move {
@@ -33,7 +31,7 @@ pub fn MyConfig() -> Element {
                         shown.set(Some((p.id, cfg)));
                     }
                     error.set(None);
-                    reload();
+                    refresh += 1;
                 }
                 Err(e) => error.set(Some(e.to_string())),
             }
@@ -76,7 +74,7 @@ pub fn MyConfig() -> Element {
                             name: peer.name.clone(),
                             address: peer.address.clone(),
                             public_key: peer.public_key.clone(),
-                            on_change: move |_| reload(),
+                            on_change: move |_| { refresh += 1; },
                             on_show: move |cfg: (Uuid, String)| shown.set(Some(cfg)),
                             on_error: move |e: String| error.set(Some(e)),
                         }

@@ -149,7 +149,6 @@ mod tests {
             listen_port: 51820,
             address: "10.8.0.1/24".into(),
             private_key: "SRVPRIV".into(),
-            public_key: "SRVPUB".into(),
         }
     }
 

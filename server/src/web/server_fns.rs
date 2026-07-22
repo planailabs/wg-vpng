@@ -4,8 +4,6 @@
 use dioxus::prelude::*;
 
 use super::dto::{CurrentUser, InterfaceView, PeerView};
-
-#[cfg(feature = "server")]
 use uuid::Uuid;
 
 #[server]

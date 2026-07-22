@@ -16,7 +16,6 @@ pub fn Peers() -> Element {
     let mut email = use_signal(String::new);
     let mut name = use_signal(String::new);
     let mut error = use_signal(|| Option::<String>::None);
-    let reload = move || refresh.with_mut(|r| *r += 1);
 
     let create = move |_| {
         let (e, n) = (email(), name());
@@ -26,7 +25,7 @@ pub fn Peers() -> Element {
                     email.set(String::new());
                     name.set(String::new());
                     error.set(None);
-                    reload();
+                    refresh += 1;
                 }
                 Err(err) => error.set(Some(err.to_string())),
             }
@@ -68,7 +67,7 @@ pub fn Peers() -> Element {
                                     "{peer.name} · {peer.address}"
                                 }
                             }
-                            AdminActions { id: peer.id, on_change: move |_| reload(), on_error: move |e: String| error.set(Some(e)) }
+                            AdminActions { id: peer.id, on_change: move |_| { refresh += 1; }, on_error: move |e: String| error.set(Some(e)) }
                         }
                     }
                 }

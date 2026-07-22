@@ -76,6 +76,7 @@ mikrotik-api = { path = "../mikrotik-api", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+uuid = { version = "1", features = ["js"] }
 
 [dev-dependencies]
 pgtemp = "0.7"

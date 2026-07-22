@@ -9,13 +9,14 @@ use crate::backend::{InterfaceSpec, PeerSpec, WireguardBackend};
 use crate::config::WireguardConfig;
 use crate::wg;
 
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, schemars::JsonSchema)]
 pub struct Interface {
     pub id: Uuid,
     pub name: String,
     pub listen_port: i32,
     pub address: String,
     #[serde(skip_serializing)]
+    #[schemars(skip)]
     pub private_key: String,
     pub public_key: String,
     pub endpoint: String,
@@ -24,7 +25,7 @@ pub struct Interface {
     pub keepalive: i32,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, schemars::JsonSchema)]
 pub struct Peer {
     pub id: Uuid,
     pub interface_id: Uuid,
@@ -210,7 +211,6 @@ pub async fn sync_interface(
         listen_port: iface.listen_port as u16,
         address: iface.address.clone(),
         private_key: iface.private_key.clone(),
-        public_key: iface.public_key.clone(),
     };
     let pspecs: Vec<PeerSpec> = peers
         .iter()

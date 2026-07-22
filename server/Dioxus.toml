@@ -1,0 +1,5 @@
+[application]
+name = "wg-vpng-server"
+
+[web.app]
+title = "wg-vpng — WireGuard VPN generator"

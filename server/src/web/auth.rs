@@ -10,8 +10,6 @@ use plan_ai_auth::{OrgMembership, UserResolver, WebUser};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-pub use plan_ai_auth::{build_auth_layers, login_page, logout_handler, require_auth};
-
 pub struct PgUserResolver {
     pool: PgPool,
     admin_emails: Vec<String>,

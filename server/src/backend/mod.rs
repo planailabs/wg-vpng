@@ -24,7 +24,6 @@ pub struct InterfaceSpec {
     /// Server address with prefix, e.g. `10.8.0.1/24`.
     pub address: String,
     pub private_key: String,
-    pub public_key: String,
 }
 
 /// Desired state of one peer.
@@ -37,7 +36,7 @@ pub struct PeerSpec {
 }
 
 /// Runtime status of a peer as reported by the backend.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, schemars::JsonSchema)]
 pub struct PeerStatus {
     pub public_key: String,
     pub endpoint: Option<String>,

@@ -38,6 +38,13 @@ fn build_registry(pool: PgPool) -> Registry<PgPool> {
         r.get("Get an interface (default interface when id omitted).", |pool, p, i: InterfaceGetInput| async move {
             interface_get(pool, p, i).await
         });
+        r.custom(
+            "status",
+            Risk::ReadOnly,
+            OnItem::Yes,
+            "Live peer status (handshakes / endpoints) as reported by the backend.",
+            |pool, p, i: InterfaceGetInput| async move { interface_status(pool, p, i).await },
+        );
     }
 
     {

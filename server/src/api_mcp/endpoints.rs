@@ -63,6 +63,33 @@ pub async fn interface_get(
     resolve_interface(&pool, i.id).await
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StatusOutput {
+    pub public_key: String,
+    pub endpoint: Option<String>,
+    pub last_handshake: Option<i64>,
+}
+
+pub async fn interface_status(
+    pool: PgPool,
+    _p: std::sync::Arc<Principal>,
+    i: InterfaceGetInput,
+) -> Result<Vec<StatusOutput>, ApiError> {
+    let iface = resolve_interface(&pool, i.id).await?;
+    let statuses = crate::server_state::backend()
+        .status(&iface.name)
+        .await
+        .map_err(internal)?;
+    Ok(statuses
+        .into_iter()
+        .map(|s| StatusOutput {
+            public_key: s.public_key,
+            endpoint: s.endpoint,
+            last_handshake: s.last_handshake,
+        })
+        .collect())
+}
+
 // ── Peers ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
