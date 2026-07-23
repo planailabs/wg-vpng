@@ -26,6 +26,17 @@ impl WireguardBackend for MikrotikBackend {
             .ensure_interface(&iface.name, iface.listen_port, &iface.private_key)
             .await?;
 
+        // Assign the interface's tunnel addresses (dual-stack), tagged so we can
+        // find/sync exactly our own set.
+        let addrs: Vec<String> = iface
+            .address
+            .split([',', ' '])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        self.client.reconcile_addresses(&iface.name, &addrs).await?;
+
         let existing = self.client.list_peers(&iface.name).await?;
         let desired: std::collections::HashSet<&str> = peers.iter().map(|p| p.public_key.as_str()).collect();
 

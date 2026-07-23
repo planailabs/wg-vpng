@@ -12,6 +12,8 @@ from urllib.parse import parse_qs, urlparse
 USER, PASS = "admin", "testpass"
 interfaces = {}   # id -> obj
 peers = {}        # id -> obj
+ip4 = {}          # id -> obj (/ip/address)
+ip6 = {}          # id -> obj (/ipv6/address) — a separate table, as on RouterOS
 _counter = {"n": 0}
 
 
@@ -93,6 +95,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, peers[pid])
             if method == "DELETE":
                 peers.pop(pid, None)
+                return self._send(200)
+
+        # ── ip / ipv6 address collection + item (separate tables) ─
+        store = ip6 if path.startswith("/rest/ipv6/address") else ip4
+        if path in ("/rest/ip/address", "/rest/ipv6/address"):
+            if method == "GET":
+                iface = query.get("interface", [None])[0]
+                return self._send(200, [v for v in store.values()
+                                        if iface is None or v.get("interface") == iface])
+            if method == "PUT":
+                obj = self._body()
+                obj[".id"] = new_id()
+                store[obj[".id"]] = obj
+                return self._send(201, obj)
+        if path.startswith("/rest/ip/address/") or path.startswith("/rest/ipv6/address/"):
+            aid = path.rsplit("/", 1)[-1]
+            if method == "PATCH":
+                store.setdefault(aid, {".id": aid}).update(self._body())
+                return self._send(200, store[aid])
+            if method == "DELETE":
+                store.pop(aid, None)
                 return self._send(200)
 
         return self._send(404, {"error": "not found", "path": path})

@@ -43,6 +43,12 @@ let
 
     def check_iface(m):
         m.wait_until_succeeds(API + " | grep -q wg0", timeout=25)
+        # Dual-stack addresses assigned + tagged with the wg-vpng comment.
+        ip = "curl -sf -u admin:testpass http://127.0.0.1:8081/rest/ip/address"
+        ip6 = "curl -sf -u admin:testpass http://127.0.0.1:8081/rest/ipv6/address"
+        m.wait_until_succeeds(ip + " | grep -q '10.8.0.1/24'", timeout=25)
+        m.wait_until_succeeds(ip + " | grep -q 'wg-vpng:wg0'", timeout=25)
+        m.wait_until_succeeds(ip6 + " | grep -qi 'fd00:8::1/64'", timeout=25)
 
     def check_subnet(m, cidr, pub):
         m.wait_until_succeeds(API + "/peers | grep -q '" + cidr + "'", timeout=25)
