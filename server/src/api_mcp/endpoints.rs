@@ -48,7 +48,7 @@ async fn sync_all(pool: &PgPool) -> Result<(), ApiError> {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BackendInput {
-    /// `self-managed`, `network-manager`, or `mikrotik`.
+    /// `self-managed`, `network-manager`, `mikrotik`, or `node`.
     pub kind: String,
     #[serde(default)]
     pub mikrotik_url: Option<String>,
@@ -58,13 +58,20 @@ pub struct BackendInput {
     pub mikrotik_password: Option<String>,
     #[serde(default)]
     pub mikrotik_insecure: bool,
+    /// Node control-API URL (node kind only).
+    #[serde(default)]
+    pub node_url: Option<String>,
+    /// Node API key (node kind only); encrypted at rest.
+    #[serde(default)]
+    pub node_key: Option<String>,
 }
 
 impl BackendInput {
     fn build(self) -> Result<BackendConfig, ApiError> {
-        if self.kind == "mikrotik" && !crate::crypto::has_key() {
+        // mikrotik + node both persist an encrypted secret.
+        if (self.kind == "mikrotik" || self.kind == "node") && !crate::crypto::has_key() {
             return Err(ApiError::bad_request(
-                "storing MikroTik credentials requires [secrets] encryption_key in config",
+                "storing backend credentials requires [secrets] encryption_key in config",
             ));
         }
         BackendConfig::from_parts(
@@ -73,6 +80,8 @@ impl BackendInput {
             self.mikrotik_username,
             self.mikrotik_password,
             self.mikrotik_insecure,
+            self.node_url,
+            self.node_key,
         )
         .map_err(ApiError::bad_request)
     }
@@ -101,6 +110,8 @@ pub struct InterfaceOutput {
     pub mikrotik_url: Option<String>,
     pub mikrotik_username: Option<String>,
     pub mikrotik_insecure: Option<bool>,
+    /// Node control-API url (no key), when applicable.
+    pub node_url: Option<String>,
 }
 
 fn iface_output(i: &store::Interface) -> InterfaceOutput {
@@ -125,6 +136,7 @@ fn iface_output(i: &store::Interface) -> InterfaceOutput {
         mikrotik_url: url,
         mikrotik_username: user,
         mikrotik_insecure: insecure,
+        node_url: i.backend.node_display(),
     }
 }
 

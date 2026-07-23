@@ -51,7 +51,7 @@ pub fn Interfaces() -> Element {
     }
 }
 
-/// Backend selector + MikroTik fields, shared by create + edit forms.
+/// Backend selector + MikroTik/node fields, shared by create + edit forms.
 #[component]
 fn BackendFields(
     kind: Signal<String>,
@@ -59,9 +59,12 @@ fn BackendFields(
     mk_user: Signal<String>,
     mk_pass: Signal<String>,
     mk_insecure: Signal<bool>,
+    node_url: Signal<String>,
+    node_key: Signal<String>,
     pass_placeholder: String,
-    /// Lock the backend *type* (immutable after creation). MikroTik credential
-    /// fields stay editable.
+    node_key_placeholder: String,
+    /// Lock the backend *type* (immutable after creation). Credential fields
+    /// stay editable.
     #[props(default = false)]
     lock_kind: bool,
 ) -> Element {
@@ -75,7 +78,9 @@ fn BackendFields(
                 onchange: move |e| kind.set(e.value()),
                 option { value: "self-managed", {t!("if-backend-self-managed")} }
                 option { value: "network-manager", {t!("if-backend-network-manager")} }
+                option { value: "systemd-networkd", {t!("if-backend-systemd-networkd")} }
                 option { value: "mikrotik", {t!("if-backend-mikrotik")} }
+                option { value: "node", {t!("if-backend-node")} }
             }
             if kind() == "mikrotik" {
                 input { class: "input text-sm", placeholder: t!("if-field-mikrotik-url"), value: "{mk_url}", oninput: move |e| mk_url.set(e.value()) }
@@ -85,6 +90,10 @@ fn BackendFields(
                     input { r#type: "checkbox", checked: mk_insecure(), onchange: move |e| mk_insecure.set(e.value() == "true") }
                     {t!("if-field-mikrotik-insecure")}
                 }
+            }
+            if kind() == "node" {
+                input { class: "input text-sm", placeholder: t!("if-field-node-url"), value: "{node_url}", oninput: move |e| node_url.set(e.value()) }
+                input { class: "input text-sm", r#type: "password", placeholder: "{node_key_placeholder}", value: "{node_key}", oninput: move |e| node_key.set(e.value()) }
             }
         }
     }
@@ -107,6 +116,8 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
     let mk_user = use_signal(String::new);
     let mk_pass = use_signal(String::new);
     let mk_insecure = use_signal(|| false);
+    let node_url = use_signal(String::new);
+    let node_key = use_signal(String::new);
 
     let submit = move |_| async move {
         match admin_create_interface(
@@ -125,6 +136,8 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
             mk_user(),
             mk_pass(),
             mk_insecure(),
+            node_url(),
+            node_key(),
         )
         .await
         {
@@ -155,7 +168,7 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
                 PatternsEditor { patterns }
             }
             div { class: "mt-3",
-                BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, pass_placeholder: t!("if-field-mikrotik-password") }
+                BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, node_url, node_key, pass_placeholder: t!("if-field-mikrotik-password"), node_key_placeholder: t!("if-field-node-key") }
             }
             p { class: "text-fg-faint text-xs mt-3", {t!("if-immutable-note")} }
             div { class: "mt-3",
@@ -224,6 +237,8 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
     let mk_user = use_signal(|| iface.mikrotik_username.clone().unwrap_or_default());
     let mk_pass = use_signal(String::new);
     let mk_insecure = use_signal(|| iface.mikrotik_insecure);
+    let node_url = use_signal(|| iface.node_url.clone().unwrap_or_default());
+    let node_key = use_signal(String::new);
 
     let save = move |_| async move {
         match admin_update_interface(
@@ -240,6 +255,8 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
             mk_user(),
             mk_pass(),
             mk_insecure(),
+            node_url(),
+            node_key(),
         )
         .await
         {
@@ -302,7 +319,7 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
                         label { class: "label text-sm text-fg-muted", {t!("if-field-patterns")} }
                         PatternsEditor { patterns }
                     }
-                    BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, pass_placeholder: t!("if-field-mikrotik-password-keep"), lock_kind: true }
+                    BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, node_url, node_key, pass_placeholder: t!("if-field-mikrotik-password-keep"), node_key_placeholder: t!("if-field-node-key-keep"), lock_kind: true }
                     p { class: "text-fg-faint text-xs", {t!("if-immutable-note-edit")} }
                     div {
                         Button { variant: ButtonVariant::Primary, onclick: save, {t!("action-save")} }

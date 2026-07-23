@@ -12,7 +12,7 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-use super::{BackendError, InterfaceSpec, PeerSpec, PeerStatus, Result, WireguardBackend};
+use crate::{BackendError, InterfaceSpec, PeerSpec, PeerStatus, Result, WireguardBackend};
 
 pub struct SelfManagedBackend;
 

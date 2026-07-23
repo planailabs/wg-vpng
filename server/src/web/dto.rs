@@ -66,6 +66,7 @@ pub struct InterfaceAdminView {
     pub mikrotik_url: Option<String>,
     pub mikrotik_username: Option<String>,
     pub mikrotik_insecure: bool,
+    pub node_url: Option<String>,
     /// Populated when the last backend sync/status failed (surfaced in the UI).
     pub backend_error: Option<String>,
 }

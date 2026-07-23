@@ -40,7 +40,7 @@ server = [
     "dep:qrcode",
     "dep:plan-ai-html",
     "dep:plan-ai-api-mcp",
-    "dep:mikrotik-api",
+    "dep:wg-backend",
     "plan-ai-auth/server",
 ]
 
@@ -80,7 +80,7 @@ aes-gcm = { version = "0.10", optional = true }
 qrcode = { version = "0.14", default-features = false, features = ["svg"], optional = true }
 plan-ai-html = { path = "../common/plan-ai-html", optional = true }
 plan-ai-api-mcp = { path = "../common/plan-ai-api-mcp", optional = true }
-mikrotik-api = { path = "../mikrotik-api", optional = true }
+wg-backend = { path = "../wg-backend", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

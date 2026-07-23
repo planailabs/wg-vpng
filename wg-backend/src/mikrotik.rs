@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 
-use super::{InterfaceSpec, PeerSpec, PeerStatus, Result, WireguardBackend};
+use crate::{InterfaceSpec, PeerSpec, PeerStatus, Result, WireguardBackend};
 
 pub struct MikrotikBackend {
     client: mikrotik_api::Client,

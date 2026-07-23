@@ -5,6 +5,8 @@ members = [
     "common/plan-ai-api-mcp",
     "common/plan-ai-api-mcp-macros",
     "mikrotik-api",
+    "wg-backend",
+    "node",
     "server",
 ]
 # plan-ai-design is consumed by path (design/ submodule) but is not a workspace

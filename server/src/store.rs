@@ -228,16 +228,18 @@ pub async fn update_interface(
                 anyhow::bail!("backend type cannot be changed after creation");
             }
             b.encrypt_secrets();
-            // A blank MikroTik password means "keep the stored one", so admins
-            // can edit the URL/username/insecure without re-typing the password.
-            if let (
-                BackendConfig::Mikrotik { password: newp, .. },
-                BackendConfig::Mikrotik { password: oldp, .. },
-            ) = (&mut b, &cur.backend)
-            {
-                if newp.is_empty() {
-                    *newp = oldp.clone();
-                }
+            // A blank secret means "keep the stored one", so admins can edit the
+            // URL/username/etc. without re-typing the MikroTik password / node key.
+            match (&mut b, &cur.backend) {
+                (
+                    BackendConfig::Mikrotik { password: newp, .. },
+                    BackendConfig::Mikrotik { password: oldp, .. },
+                ) if newp.is_empty() => *newp = oldp.clone(),
+                (
+                    BackendConfig::Node { key: newk, .. },
+                    BackendConfig::Node { key: oldk, .. },
+                ) if newk.is_empty() => *newk = oldk.clone(),
+                _ => {}
             }
             b
         }

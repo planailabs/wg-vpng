@@ -138,10 +138,12 @@ pub async fn admin_create_interface(
     mikrotik_username: String,
     mikrotik_password: String,
     mikrotik_insecure: bool,
+    node_url: String,
+    node_key: String,
 ) -> Result<(), ServerFnError> {
     let pool = crate::server_state::pool()?;
     require_admin(&pool).await?;
-    let backend = build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure)?;
+    let backend = build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure, &node_url, &node_key)?;
     let patterns = clean_patterns(access_patterns);
     let iface = crate::store::create_interface(
         &pool,
@@ -179,12 +181,14 @@ pub async fn admin_update_interface(
     mikrotik_username: String,
     mikrotik_password: String,
     mikrotik_insecure: bool,
+    node_url: String,
+    node_key: String,
 ) -> Result<(), ServerFnError> {
     let pool = crate::server_state::pool()?;
     require_admin(&pool).await?;
     // The backend *type* is immutable (enforced in the store); credentials may be
-    // updated. A blank MikroTik password keeps the stored one (store handles it).
-    let backend = Some(build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure)?);
+    // updated. A blank MikroTik password / node key keeps the stored one.
+    let backend = Some(build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure, &node_url, &node_key)?);
     let patterns = clean_patterns(access_patterns);
     crate::store::update_interface(
         &pool,
@@ -337,16 +341,21 @@ fn clean_patterns(rows: Vec<String>) -> Vec<String> {
 }
 
 #[cfg(feature = "server")]
+#[allow(clippy::too_many_arguments)]
 fn build_backend_config(
     kind: &str,
     url: &str,
     username: &str,
     password: &str,
     insecure: bool,
+    node_url: &str,
+    node_key: &str,
 ) -> Result<crate::backend::BackendConfig, ServerFnError> {
-    if kind == "mikrotik" && !crate::crypto::has_key() {
+    // Both mikrotik and node persist a secret (password / API key) encrypted at
+    // rest, so both require the encryption key to be configured.
+    if (kind == "mikrotik" || kind == "node") && !crate::crypto::has_key() {
         return Err(ServerFnError::new(
-            "storing MikroTik credentials requires [secrets] encryption_key in config",
+            "storing backend credentials requires [secrets] encryption_key in config",
         ));
     }
     crate::backend::BackendConfig::from_parts(
@@ -355,6 +364,8 @@ fn build_backend_config(
         Some(username.to_string()),
         Some(password.to_string()),
         insecure,
+        Some(node_url.to_string()),
+        Some(node_key.to_string()),
     )
     .map_err(ServerFnError::new)
 }
@@ -382,6 +393,7 @@ fn iface_admin_view(i: &crate::store::Interface) -> InterfaceAdminView {
         mikrotik_url: url,
         mikrotik_username: user,
         mikrotik_insecure: insecure,
+        node_url: i.backend.node_display(),
         backend_error: i.last_error.clone(),
     }
 }

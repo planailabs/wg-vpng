@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use tokio::process::Command;
 
-use super::{BackendError, InterfaceSpec, PeerSpec, PeerStatus, Result, WireguardBackend};
+use crate::{BackendError, InterfaceSpec, PeerSpec, PeerStatus, Result, WireguardBackend};
 
 const DEFAULT_KEYFILE_DIR: &str = "/etc/NetworkManager/system-connections";
 
@@ -122,7 +122,7 @@ impl WireguardBackend for NetworkManagerBackend {
         // NM creates a real kernel wg interface, so `wg show` still works.
         match Command::new("wg").args(["show", iface_name, "dump"]).output().await {
             Ok(out) if out.status.success() => {
-                Ok(super::selfmanaged::parse_wg_dump(&String::from_utf8_lossy(&out.stdout)))
+                Ok(crate::parse_wg_dump(&String::from_utf8_lossy(&out.stdout)))
             }
             _ => Ok(vec![]),
         }

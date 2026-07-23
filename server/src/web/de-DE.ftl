@@ -87,7 +87,12 @@ if-patterns-help = Eins pro Zeile oder Leerzeichen. * = alle; literale E-Mails e
 if-field-backend = Backend
 if-backend-self-managed = Selbstverwaltet (wg + ip)
 if-backend-network-manager = NetworkManager
+if-backend-systemd-networkd = systemd-networkd
 if-backend-mikrotik = MikroTik (RouterOS)
+if-backend-node = Node (Remote-Agent)
+if-field-node-url = Node-URL (http://host:8787)
+if-field-node-key = Node-API-Schlüssel
+if-field-node-key-keep = Node-API-Schlüssel (leer lassen zum Beibehalten)
 if-field-mikrotik-url = RouterOS-URL (https://…)
 if-field-mikrotik-username = RouterOS-Benutzername
 if-field-mikrotik-password = RouterOS-Passwort

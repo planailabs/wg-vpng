@@ -1,0 +1,15 @@
+# wg-vpng-node — a dumb WireGuard switch driven by the main wg-vpng server.
+# It holds no interface state; the server pushes desired state over this API.
+
+# Address:port for the control API. Point the server's Node backend `url` at
+# http://<this-host>:8787 with a matching key.
+bind = "0.0.0.0:8787"
+
+# Bearer key the server must present. Generate one, e.g. `openssl rand -hex 32`,
+# and set the same value as the interface's node key in the server UI.
+api_key = "change-me-to-a-long-random-secret"
+
+# Local mechanism used to apply interfaces on this node:
+#   "self-managed"    — kernel WireGuard via `wg` + `ip`
+#   "network-manager" — NetworkManager keyfile + `nmcli`
+backend = "self-managed"
