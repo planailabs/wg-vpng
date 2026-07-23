@@ -183,6 +183,53 @@ pub fn validate_address_spec(spec: &str) -> Result<String, String> {
     Ok(nets.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", "))
 }
 
+/// If `spec` is a bare prefix length (e.g. `/64`), return it — the admin wants a
+/// routed subnet of that size auto-allocated from the interface's range rather
+/// than a specific network.
+pub fn parse_bare_prefix(spec: &str) -> Option<u8> {
+    let rest = spec.trim().strip_prefix('/')?;
+    rest.parse::<u8>().ok()
+}
+
+/// Two CIDR blocks overlap iff one contains the other's network address (CIDR
+/// blocks are either disjoint or nested).
+fn nets_overlap(a: &ipnet::IpNet, b: &ipnet::IpNet) -> bool {
+    a.contains(&b.network()) || b.contains(&a.network())
+}
+
+/// Allocate a free routed subnet of prefix length `prefix` carved out of one of
+/// the interface's subnets, avoiding the server address and anything in `taken`
+/// (each entry may be a comma-list of CIDRs). Returns the subnet CIDR, e.g.
+/// `fd00:8::1:0/112`.
+pub fn allocate_subnet(subnets: &[ipnet::IpNet], taken: &[String], prefix: u8) -> Result<String, String> {
+    let taken_nets: Vec<ipnet::IpNet> = taken
+        .iter()
+        .flat_map(|t| t.split([',', ' ']).map(str::trim).filter(|s| !s.is_empty()))
+        .filter_map(|s| s.parse::<ipnet::IpNet>().ok())
+        .collect();
+
+    for net in subnets {
+        let max = if net.addr().is_ipv4() { 32 } else { 128 };
+        // The requested subnet must fit inside this one and be valid for the family.
+        if prefix < net.prefix_len() || prefix > max {
+            continue;
+        }
+        let subs = match net.subnets(prefix) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        for sub in subs {
+            // Skip the block holding the server's own address, and any block that
+            // overlaps an already-assigned host/subnet.
+            if sub.contains(&net.addr()) || taken_nets.iter().any(|t| nets_overlap(&sub, t)) {
+                continue;
+            }
+            return Ok(sub.to_string());
+        }
+    }
+    Err(format!("no free /{prefix} subnet available in the interface's range"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +344,53 @@ mod tests {
         );
         assert!(validate_address_spec("not-an-ip").is_err());
         assert!(validate_address_spec("").is_err());
+    }
+
+    #[test]
+    fn parses_bare_prefix() {
+        assert_eq!(parse_bare_prefix("/64"), Some(64));
+        assert_eq!(parse_bare_prefix("  /112 "), Some(112));
+        assert_eq!(parse_bare_prefix("/28"), Some(28));
+        // Not bare prefixes → None (fall through to explicit-CIDR handling).
+        assert_eq!(parse_bare_prefix("fd00::/64"), None);
+        assert_eq!(parse_bare_prefix("/"), None);
+        assert_eq!(parse_bare_prefix("/notnum"), None);
+        assert_eq!(parse_bare_prefix(""), None);
+    }
+
+    #[test]
+    fn allocates_free_subnet_of_prefix() {
+        let subnets = parse_subnets("10.8.0.1/24, fd00:8::1/64").unwrap();
+        // A /112 out of the v6 /64. The first block holds the server (::1), so we
+        // get the second.
+        let taken = vec!["fd00:8::2/128".to_string()];
+        let got = allocate_subnet(&subnets, &taken, 112).unwrap();
+        let net: ipnet::IpNet = got.parse().unwrap();
+        assert_eq!(net.prefix_len(), 112);
+        assert!(net.addr().is_ipv6());
+        // Must not contain the server addr or the taken host (both in block 0).
+        assert!(!net.contains(&"fd00:8::1".parse::<std::net::IpAddr>().unwrap()));
+        assert!(!net.contains(&"fd00:8::2".parse::<std::net::IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn allocates_v4_subnet_when_prefix_fits_v4() {
+        let subnets = parse_subnets("10.8.0.1/24, fd00:8::1/64").unwrap();
+        // /28 is invalid for v6-only intent but fits the v4 /24 → v4 block.
+        let got = allocate_subnet(&subnets, &[], 28).unwrap();
+        let net: ipnet::IpNet = got.parse().unwrap();
+        assert!(net.addr().is_ipv4());
+        assert_eq!(net.prefix_len(), 28);
+    }
+
+    #[test]
+    fn subnet_allocation_skips_overlaps_and_exhausts() {
+        // A /64 cannot be carved out of a /64 already hosting the server.
+        let subnets = parse_subnets("fd00:8::1/64").unwrap();
+        assert!(allocate_subnet(&subnets, &[], 64).is_err());
+        // Two sequential /112 allocations don't overlap.
+        let a = allocate_subnet(&subnets, &[], 112).unwrap();
+        let b = allocate_subnet(&subnets, &[a.clone()], 112).unwrap();
+        assert_ne!(a, b);
     }
 }

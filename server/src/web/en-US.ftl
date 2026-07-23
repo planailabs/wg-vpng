@@ -51,7 +51,7 @@ users-device-count = { $count } / { $limit } devices
 users-limit-label = Limit
 users-limit-placeholder = def
 users-new-device-placeholder = new device name
-users-new-device-subnet-placeholder = subnet (optional, e.g. fd00:2::/64)
+users-new-device-subnet-placeholder = subnet (optional: /64 or fd00:2::/64)
 users-no-devices = No devices.
 users-loading-devices = Loading devices…
 

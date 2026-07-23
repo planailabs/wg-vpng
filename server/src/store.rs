@@ -356,6 +356,22 @@ pub async fn create_peer(
     insert_peer(pool, interface_id, user_id, name, &address).await
 }
 
+/// Resolve an admin-supplied device address spec to a concrete address. A bare
+/// prefix (e.g. `/64`) auto-allocates a free routed subnet of that size from the
+/// interface's range; anything else is validated as an explicit CIDR spec.
+async fn resolve_admin_address(pool: &PgPool, interface_id: Uuid, spec: &str) -> Result<String> {
+    match wg::parse_bare_prefix(spec) {
+        Some(prefix) => {
+            let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
+            let subnets = wg::parse_subnets(&iface.address).map_err(anyhow::Error::msg)?;
+            let taken: Vec<String> =
+                list_peers(pool, interface_id).await?.into_iter().map(|p| p.address).collect();
+            wg::allocate_subnet(&subnets, &taken, prefix).map_err(anyhow::Error::msg)
+        }
+        None => wg::validate_address_spec(spec).map_err(anyhow::Error::msg),
+    }
+}
+
 /// Create a peer with an explicit address/subnet spec (admin only). Returns
 /// `(peer, private_key)`.
 pub async fn create_peer_with_address(
@@ -365,7 +381,7 @@ pub async fn create_peer_with_address(
     name: &str,
     address_spec: &str,
 ) -> Result<(Peer, String)> {
-    let address = wg::validate_address_spec(address_spec).map_err(anyhow::Error::msg)?;
+    let address = resolve_admin_address(pool, interface_id, address_spec).await?;
     insert_peer(pool, interface_id, user_id, name, &address).await
 }
 
@@ -380,7 +396,7 @@ pub async fn create_peer_unconfigured(
     address_spec: Option<&str>,
 ) -> Result<Peer> {
     let address = match address_spec {
-        Some(s) => wg::validate_address_spec(s).map_err(anyhow::Error::msg)?,
+        Some(s) => resolve_admin_address(pool, interface_id, s).await?,
         None => {
             let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
             let subnets = wg::parse_subnets(&iface.address).map_err(anyhow::Error::msg)?;
