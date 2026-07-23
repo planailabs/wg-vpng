@@ -73,7 +73,10 @@ in
 
       preStart = ''
         umask 077
-        cp ${configBase} "$RUNTIME_DIRECTORY/config.toml"
+        # `cat >` (not cp) so the runtime file is a fresh 0600 writable file —
+        # cp would inherit the store base config's read-only mode, breaking the
+        # api_key append below.
+        cat ${configBase} > "$RUNTIME_DIRECTORY/config.toml"
         ${lib.optionalString (cfg.apiKeyFile != null) ''
           printf 'api_key = "%s"\n' "$(cat ${cfg.apiKeyFile})" >> "$RUNTIME_DIRECTORY/config.toml"
         ''}
