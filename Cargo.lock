@@ -5606,6 +5606,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "wg-backend"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "mikrotik-api",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "wg-vpng-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "wg-backend",
+]
+
+[[package]]
 name = "wg-vpng-server"
 version = "0.1.0"
 dependencies = [
@@ -5619,7 +5649,6 @@ dependencies = [
  "dioxus-i18n",
  "getrandom 0.2.17",
  "ipnet",
- "mikrotik-api",
  "pgtemp",
  "plan-ai-api-mcp",
  "plan-ai-auth",
@@ -5642,6 +5671,7 @@ dependencies = [
  "unic-langid",
  "uuid",
  "wasm-bindgen",
+ "wg-backend",
  "x25519-dalek",
 ]
 

@@ -15,4 +15,5 @@ in
   inherit dioxus-cli-patched;
 
   wg-vpng-server = prev.callPackage ./server/package.nix { inherit gitSha; };
+  wg-vpng-node = prev.callPackage ./node/package.nix { };
 }

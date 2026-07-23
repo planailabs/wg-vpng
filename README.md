@@ -27,8 +27,12 @@ is applied through a pluggable backend.
 - **Per-interface pluggable backends** (chosen when creating the interface):
   - `self-managed` — a kernel WireGuard interface driven by `wg` + `ip`.
   - `network-manager` — an `nmcli` keyfile connection profile.
+  - `systemd-networkd` — a `.netdev`/`.network` pair + `networkctl reload`.
   - `mikrotik` — RouterOS 7 REST API (via the `mikrotik-api` crate); the
     password is encrypted at rest with `[secrets] encryption_key`.
+  - `node` — a remote [`wg-vpng-node`](node/) agent driven over HTTP; the
+    node applies interfaces with its *own* local backend (self-managed /
+    systemd-networkd). The node API key is encrypted at rest.
 - **Dioxus fullstack** UI using the shared `plan-ai-design` system; error and
   login pages rendered with `plan-ai-html`.
 - **REST + MCP API** via [`plan-ai-api-mcp`] at `/api/v1/*` and `/mcp`
@@ -37,16 +41,19 @@ is applied through a pluggable backend.
 ## Layout
 
 ```
-server/          the fullstack app (UI + API + backends)
-  src/backend/   WireguardBackend trait + self-managed / NM / mikrotik impls
+server/          the fullstack app (UI + API)
+  src/backend/   BackendConfig (per-interface choice, secrets encrypted)
   src/wg.rs      keygen, client-config rendering, address allocation
   src/store.rs   DB layer + backend reconcile
   src/api_mcp/   plan-ai-api-mcp registry + endpoints + token auth
   src/web/       Dioxus app, server functions, OIDC resolver
   migrations/    sqlx migrations
+wg-backend/      shared WireguardBackend trait + reconcile impls + wire types
+                 (self-managed / NM / systemd-networkd / mikrotik / node)
+node/            wg-vpng-node — a dumb WireGuard switch driven by the server
 mikrotik-api/    standalone RouterOS REST client
 common/, design/ git submodules (../common, ../design)
-flake.nix        devshell, package, NixOS module, VM integration test
+flake.nix        devshell, packages, NixOS modules, per-backend VM tests
 ```
 
 ## Develop
@@ -58,7 +65,7 @@ postgres, wireguard-tools):
 nix develop
 # unit + backend + pgtemp tests (server feature avoids the wasm build)
 cargo test -p wg-vpng-server --no-default-features --features server
-cargo test -p mikrotik-api
+cargo test -p wg-backend -p wg-vpng-node -p mikrotik-api
 overmind start                               # Procfile: dx serve (DEV_ONLY_NO_AUTH) + tailwind watch
 nix build .#checks.x86_64-linux.integration -L   # NixOS VM end-to-end test
 nix build .#wg-vpng-server                   # the production build
@@ -89,6 +96,21 @@ image; `nix build .#image` builds the NixOS-in-Incus CI runner.
     environmentFile = "/run/secrets/wg-vpng.env";
   };
   # Create interfaces (and open their per-interface UDP ports) from the admin UI.
+}
+```
+
+To offload interfaces to a remote box, run a node there and point a `node`
+interface at it (URL + the same key):
+
+```nix
+{
+  imports = [ inputs.wg-vpng.nixosModules.wg-vpng-node ];
+  services.wg-vpng-node = {
+    enable = true;
+    openFirewall = true;                     # opens the control-API TCP port
+    settings.backend = "self-managed";       # or "systemd-networkd"
+    apiKeyFile = "/run/secrets/wg-vpng-node.key";  # kept out of the store
+  };
 }
 ```
 

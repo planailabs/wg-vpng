@@ -26,19 +26,32 @@ The release package builds with `dx build --fullstack` and the patched
   config.toml). Each row carries its **own backend** (`BackendConfig`, a JSONB
   column), a per-user `device_limit`, and `access_patterns`. `[wireguard]` no
   longer exists in config — only `[database]`, `[web]`, `[secrets]`, `[auth]`.
-- **Backends** live in `server/src/backend/`. Add one by implementing
-  `WireguardBackend::{apply, status, remove}` (full-state reconcile) and a
-  `BackendConfig` variant + `from_parts`. Backends are built per-interface at
-  sync time (`store::sync_interface`), not globally. Keep request/command
-  construction in pure functions with unit tests.
+- **Backends** live in the shared `wg-backend/` crate (`WireguardBackend` trait
+  + `InterfaceSpec`/`PeerSpec`/`PeerStatus` wire types + impls: self-managed,
+  network-manager, systemd-networkd, mikrotik, node). `server/src/backend/`
+  keeps only `BackendConfig` — the per-interface, secret-encrypted choice.
+  Add a backend by implementing `WireguardBackend::{apply, status, remove}`
+  (full-state reconcile) in `wg-backend`, then a `BackendConfig` variant +
+  `from_parts` + `build`. Keep request/command construction in pure functions
+  with unit tests. Backends are built per-interface at sync time
+  (`store::sync_interface`), not globally.
+- **The `node` backend** drives a remote `wg-vpng-node` (`node/` crate) over
+  HTTP; the node is a dumb switch that applies pushed state with its *own* local
+  backend (self-managed / systemd-networkd), configured only with a `bind`,
+  `api_key`, and `backend`. `wg-backend::local_backend(kind)` builds a node's
+  local backend; the node router (`node/src/lib.rs::app`) is bearer-authed.
+- **Server addresses and the backend *type* are immutable** after interface
+  creation (enforced in `store::update_interface`); MikroTik/node credentials
+  can still be edited (blank secret = keep the stored one).
 - **Access is pattern-only** (`store::email_matches`): a user can use an
   interface iff their email matches its `access_patterns` (`*` = all; literal
   emails allowed; empty = nobody). No manual grants. `list_active_peers` filters
   by this, so editing patterns + a sync grants/revokes in real time. Any peer
   mutation, pattern edit, or ban/revoke triggers a sync.
-- **Secrets** (MikroTik password) are encrypted at rest (`server/src/crypto.rs`,
-  AES-256-GCM) with the key from `[secrets] encryption_key`. Never store or log
-  a credential in plaintext; encrypt via `BackendConfig::encrypt_secrets`.
+- **Secrets** (MikroTik password, node API key) are encrypted at rest
+  (`server/src/crypto.rs`, AES-256-GCM) with the key from `[secrets]
+  encryption_key`. Never store or log a credential in plaintext; encrypt via
+  `BackendConfig::encrypt_secrets`.
 - **Interface bring-up failures** are persisted to `wg_interfaces.last_error`
   by `sync_interface` and surfaced in the admin UI.
 - **API** = one `plan-ai-api-mcp` `Registry` in `server/src/api_mcp/`; handlers

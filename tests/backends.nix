@@ -93,6 +93,77 @@ in
     verifyPy = kernelVerify ''m.wait_for_unit("NetworkManager.service")'';
   };
 
+  # ── systemd-networkd: kernel wg via .netdev/.network + networkctl ───
+  # Like NetworkManager, wg-vpng writes config under /etc and runs networkctl,
+  # so it runs as root (with a matching postgres superuser role).
+  integration-systemd-networkd = mk {
+    inherit pkgs;
+    name = "systemd-networkd";
+    backend = { kind = "systemd-networkd"; };
+    node =
+      { pkgs, lib, ... }:
+      {
+        boot.kernelModules = [ "wireguard" ];
+        systemd.network.enable = true;
+        services.postgresql.ensureUsers = [
+          { name = "root"; ensureClauses.superuser = true; }
+        ];
+        systemd.services.wg-vpng-server = {
+          after = [ "systemd-networkd.service" ];
+          wants = [ "systemd-networkd.service" ];
+          path = [ pkgs.systemd pkgs.wireguard-tools pkgs.iproute2 ];
+          serviceConfig = {
+            User = lib.mkForce "root";
+            Group = lib.mkForce "root";
+            # Keep ProtectSystem=strict (from the module) but carve out networkd's
+            # config dir so the backend can write .netdev/.network there.
+            ReadWritePaths = [ "-/etc/systemd/network" ];
+          };
+        };
+      };
+    verifyPy = kernelVerify ''m.wait_for_unit("systemd-networkd.service")'';
+  };
+
+  # ── node: server drives a local wg-vpng-node over HTTP, which applies ─
+  # wg0 with its own self-managed backend. Both run on one machine; the
+  # server's Node backend points at 127.0.0.1:8787, so `wg show wg0` reflects
+  # what the node created.
+  integration-node = mk {
+    inherit pkgs;
+    name = "node";
+    backend = {
+      kind = "node";
+      node_url = "http://127.0.0.1:8787";
+      node_key = "testnodekey";
+    };
+    # The node key is stored encrypted at rest, so the server needs an app key.
+    settingsExtra.secrets.encryption_key =
+      "0000000000000000000000000000000000000000000000000000000000000000";
+    node =
+      { ... }:
+      {
+        imports = [ ../node/module.nix ];
+        boot.kernelModules = [ "wireguard" ];
+        services.wg-vpng-node = {
+          enable = true;
+          package = pkgs.wg-vpng-node;
+          settings = {
+            bind = "127.0.0.1:8787";
+            backend = "self-managed";
+            api_key = "testnodekey";
+          };
+        };
+        systemd.services.wg-vpng-server = {
+          after = [ "wg-vpng-node.service" ];
+          wants = [ "wg-vpng-node.service" ];
+        };
+      };
+    verifyPy = kernelVerify ''
+      m.wait_for_unit("wg-vpng-node.service")
+      m.wait_for_open_port(8787)
+    '';
+  };
+
   # ── MikroTik: RouterOS REST against the fake server ────────────────
   integration-mikrotik = mk {
     inherit pkgs;

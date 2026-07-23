@@ -32,11 +32,11 @@ test:
     - nix-image
   script:
     - nix develop -c cargo test -p wg-vpng-server --no-default-features --features server --locked
-    - nix develop -c cargo test -p mikrotik-api --locked
+    - nix develop -c cargo test -p wg-backend -p wg-vpng-node -p mikrotik-api --locked
     - nix develop -c cargo check -p wg-vpng-server --no-default-features --features web --target wasm32-unknown-unknown --locked
   timeout: 2h
 
-# VM-backed flake checks (all three backends) — run serially so one test VM
+# VM-backed flake checks (every backend) — run serially so one test VM
 # cannot starve another until the NixOS backdoor times out.
 flake-check:
   stage: test

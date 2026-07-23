@@ -24,6 +24,7 @@
       overlays.default = import ./overlay.nix { gitSha = self.rev or self.dirtyRev or "unknown"; };
       nixosModules.default = import ./server/module.nix;
       nixosModules.wg-vpng = import ./server/module.nix;
+      nixosModules.wg-vpng-node = import ./node/module.nix;
     } //
     flake-utils.lib.eachDefaultSystem (system:
       let
@@ -81,6 +82,7 @@
         packages = {
           default = pkgs.wg-vpng-server;
           wg-vpng-server = pkgs.wg-vpng-server;
+          wg-vpng-node = pkgs.wg-vpng-node;
           dioxus-cli-patched = pkgs.dioxus-cli-patched;
         } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           # OCI image (nix dockerTools). Push with docker-push.sh.
@@ -117,9 +119,10 @@
         # throws, and `nix flake show` walks every system.
         #
         # One generic NixOS VM test (tests/lib.nix) instantiated for every
-        # backend: self-managed, NetworkManager, and MikroTik (against a fake
-        # RouterOS REST server). Run e.g.:
-        #   nix build .#checks.x86_64-linux.integration-mikrotik -L
+        # backend: self-managed, NetworkManager, systemd-networkd, node (server
+        # + a local wg-vpng-node), and MikroTik (against a fake RouterOS REST
+        # server). Run e.g.:
+        #   nix build .#checks.x86_64-linux.integration-node -L
         checks = nixpkgs.lib.optionalAttrs (system == "x86_64-linux") (
           import ./tests/backends.nix { inherit pkgs; }
         );
