@@ -118,6 +118,11 @@ in
             # Keep ProtectSystem=strict (from the module) but carve out networkd's
             # config dir so the backend can write .netdev/.network there.
             ReadWritePaths = [ "-/etc/systemd/network" ];
+            # The backend chgrps the secret .netdev to systemd-network so networkd
+            # (which runs as that user) can read it. The module bounds caps to
+            # CAP_NET_ADMIN (no CAP_CHOWN), so the chgrp only works if the service
+            # is a *member* of the target group.
+            SupplementaryGroups = [ "systemd-network" ];
           };
         };
       };
@@ -158,10 +163,7 @@ in
           wants = [ "wg-vpng-node.service" ];
         };
       };
-    verifyPy = kernelVerify ''
-      m.wait_for_unit("wg-vpng-node.service")
-      m.wait_for_open_port(8787)
-    '';
+    verifyPy = kernelVerify ''m.wait_for_unit("wg-vpng-node.service"); m.wait_for_open_port(8787)'';
   };
 
   # ── MikroTik: RouterOS REST against the fake server ────────────────

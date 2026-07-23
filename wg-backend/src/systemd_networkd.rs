@@ -35,6 +35,17 @@ fn cidrs(spec: &str) -> impl Iterator<Item = &str> {
     spec.split([',', ' ']).map(str::trim).filter(|a| !a.is_empty())
 }
 
+/// Resolve the `systemd-network` group's gid from `/etc/group` (fields
+/// `name:passwd:gid:members`). networkd runs as that user, so the secret-bearing
+/// `.netdev` must be group-readable by it. Returns None if the group is absent.
+fn systemd_network_gid() -> Option<u32> {
+    let group = std::fs::read_to_string("/etc/group").ok()?;
+    group.lines().find_map(|line| {
+        let mut f = line.split(':');
+        (f.next() == Some("systemd-network")).then(|| f.nth(1)).flatten()?.parse().ok()
+    })
+}
+
 /// Render the `.netdev`: the WireGuard device, its key/port, and every peer.
 pub fn render_netdev(iface: &InterfaceSpec, peers: &[PeerSpec]) -> String {
     let mut s = String::new();
@@ -97,14 +108,20 @@ impl WireguardBackend for SystemdNetworkdBackend {
         let network = dir.join(format!("{}.network", iface.name));
 
         tokio::fs::write(&netdev, render_netdev(iface, peers)).await?;
-        // The .netdev holds the private key — networkd refuses world-readable
-        // secrets. 0640 root:systemd-network; the chgrp is best-effort (the
-        // group may be absent on non-networkd hosts).
+        // The .netdev holds the private key — networkd (running as the
+        // systemd-network user) must read it, but it mustn't be world-readable.
+        // 0640 + group systemd-network. The chown is in-process (no external
+        // chgrp, which may be off PATH) and best-effort (group may be absent).
         tokio::fs::set_permissions(&netdev, std::fs::Permissions::from_mode(0o640)).await?;
-        let _ = Command::new("chgrp")
-            .args(["systemd-network", &netdev.to_string_lossy()])
-            .status()
-            .await;
+        if let Some(gid) = systemd_network_gid() {
+            // A failure here leaves the key unreadable by networkd (broken
+            // interface), so surface it rather than swallow it. Needs the
+            // service to own the file and be a member of systemd-network (or
+            // CAP_CHOWN).
+            std::os::unix::fs::chown(&netdev, None, Some(gid)).map_err(|e| {
+                BackendError::Command(format!("chgrp systemd-network {}: {e}", netdev.display()))
+            })?;
+        }
         tokio::fs::write(&network, render_network(iface)).await?;
 
         networkctl(&["reload"]).await?;
