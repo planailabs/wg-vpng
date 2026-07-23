@@ -101,6 +101,9 @@ fn BackendFields(
 
 #[component]
 fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
+    // Collapsed by default — the form is long, and creating interfaces is rare
+    // relative to viewing them.
+    let mut expanded = use_signal(|| false);
     let mut name = use_signal(|| "wg0".to_string());
     let mut display_name = use_signal(String::new);
     let mut listen_port = use_signal(|| "51820".to_string());
@@ -110,14 +113,14 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
     let mut allowed_ips = use_signal(|| "10.8.0.0/24, fd00:8::/64".to_string());
     let mut keepalive = use_signal(|| "25".to_string());
     let mut device_limit = use_signal(String::new);
-    let patterns = use_signal(|| vec!["*".to_string()]);
-    let kind = use_signal(|| "self-managed".to_string());
-    let mk_url = use_signal(String::new);
-    let mk_user = use_signal(String::new);
-    let mk_pass = use_signal(String::new);
-    let mk_insecure = use_signal(|| false);
-    let node_url = use_signal(String::new);
-    let node_key = use_signal(String::new);
+    let mut patterns = use_signal(|| vec!["*".to_string()]);
+    let mut kind = use_signal(|| "self-managed".to_string());
+    let mut mk_url = use_signal(String::new);
+    let mut mk_user = use_signal(String::new);
+    let mut mk_pass = use_signal(String::new);
+    let mut mk_insecure = use_signal(|| false);
+    let mut node_url = use_signal(String::new);
+    let mut node_key = use_signal(String::new);
 
     let submit = move |_| async move {
         match admin_create_interface(
@@ -142,37 +145,65 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
         .await
         {
             Ok(()) => {
+                // Reset to defaults and collapse so the next create starts fresh.
+                name.set("wg0".to_string());
+                display_name.set(String::new());
+                listen_port.set("51820".to_string());
+                address.set("10.8.0.1/24, fd00:8::1/64".to_string());
                 endpoint.set(String::new());
+                dns.set(String::new());
+                allowed_ips.set("10.8.0.0/24, fd00:8::/64".to_string());
+                keepalive.set("25".to_string());
+                device_limit.set(String::new());
+                patterns.set(vec!["*".to_string()]);
+                kind.set("self-managed".to_string());
+                mk_url.set(String::new());
+                mk_user.set(String::new());
+                mk_pass.set(String::new());
+                mk_insecure.set(false);
+                node_url.set(String::new());
+                node_key.set(String::new());
+                expanded.set(false);
                 on_change.call(());
             }
             Err(e) => on_error.call(e.to_string()),
         }
     };
 
+    let header_border = if expanded() { "border-b border-line-soft" } else { "" };
     rsx! {
-        Card { class: "p-4",
-            h3 { class: "text-sm font-semibold text-fg-strong mb-3", {t!("interfaces-create-heading")} }
-            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
-                Field { label: t!("if-field-name"), value: name, placeholder: "wg0".to_string() }
-                Field { label: t!("if-field-display-name"), value: display_name, placeholder: t!("if-field-display-name-placeholder") }
-                Field { label: t!("if-field-listen-port"), value: listen_port, placeholder: "51820".to_string() }
-                Field { label: t!("if-field-address"), value: address, placeholder: "10.8.0.1/24, fd00::1/64".to_string() }
-                Field { label: t!("if-field-endpoint"), value: endpoint, placeholder: "vpn.example.com:51820".to_string() }
-                Field { label: t!("if-field-dns"), value: dns, placeholder: "10.8.0.1".to_string() }
-                Field { label: t!("if-field-allowed-ips"), value: allowed_ips, placeholder: "0.0.0.0/0, ::/0".to_string() }
-                Field { label: t!("if-field-keepalive"), value: keepalive, placeholder: "25".to_string() }
-                Field { label: t!("if-field-device-limit"), value: device_limit, placeholder: "5".to_string() }
+        Card { class: "p-0 overflow-hidden",
+            button {
+                class: "w-full px-4 py-3 bg-surface-2 flex items-center gap-2 text-left {header_border}",
+                onclick: move |_| expanded.toggle(),
+                span { class: "text-sm font-semibold text-fg-strong flex-1", {t!("interfaces-create-heading")} }
+                span { class: "text-fg-muted text-lg leading-none", { if expanded() { "−" } else { "+" } } }
             }
-            div { class: "mt-3",
-                label { class: "label text-sm text-fg-muted", {t!("if-field-patterns")} }
-                PatternsEditor { patterns }
-            }
-            div { class: "mt-3",
-                BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, node_url, node_key, pass_placeholder: t!("if-field-mikrotik-password"), node_key_placeholder: t!("if-field-node-key") }
-            }
-            p { class: "text-fg-faint text-xs mt-3", {t!("if-immutable-note")} }
-            div { class: "mt-3",
-                Button { variant: ButtonVariant::Primary, onclick: submit, {t!("action-create")} }
+            if expanded() {
+                div { class: "p-4",
+                    div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
+                        Field { label: t!("if-field-name"), value: name, placeholder: "wg0".to_string() }
+                        Field { label: t!("if-field-display-name"), value: display_name, placeholder: t!("if-field-display-name-placeholder") }
+                        Field { label: t!("if-field-listen-port"), value: listen_port, placeholder: "51820".to_string() }
+                        Field { label: t!("if-field-address"), value: address, placeholder: "10.8.0.1/24, fd00::1/64".to_string() }
+                        Field { label: t!("if-field-endpoint"), value: endpoint, placeholder: "vpn.example.com:51820".to_string() }
+                        Field { label: t!("if-field-dns"), value: dns, placeholder: "10.8.0.1".to_string() }
+                        Field { label: t!("if-field-allowed-ips"), value: allowed_ips, placeholder: "0.0.0.0/0, ::/0".to_string() }
+                        Field { label: t!("if-field-keepalive"), value: keepalive, placeholder: "25".to_string() }
+                        Field { label: t!("if-field-device-limit"), value: device_limit, placeholder: "5".to_string() }
+                    }
+                    div { class: "mt-3",
+                        label { class: "label text-sm text-fg-muted", {t!("if-field-patterns")} }
+                        PatternsEditor { patterns }
+                    }
+                    div { class: "mt-3",
+                        BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, node_url, node_key, pass_placeholder: t!("if-field-mikrotik-password"), node_key_placeholder: t!("if-field-node-key") }
+                    }
+                    p { class: "text-fg-faint text-xs mt-3", {t!("if-immutable-note")} }
+                    div { class: "mt-3",
+                        Button { variant: ButtonVariant::Primary, onclick: submit, {t!("action-create")} }
+                    }
+                }
             }
         }
     }

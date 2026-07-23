@@ -79,21 +79,21 @@ fn UserCard(
     let mut sel_iface = use_signal(|| ifaces.first().map(|(id, _)| id.to_string()).unwrap_or_default());
 
     rsx! {
-        Card { class: "p-4",
-            div { class: "flex items-center gap-3 flex-wrap",
+        Card { class: "p-0 overflow-hidden",
+            // Header band: identity + status (left), access actions (right).
+            div { class: "px-4 py-3 border-b border-line-soft bg-surface-2 flex items-center gap-3 flex-wrap",
                 div { class: "flex-1 min-w-0",
-                    div { class: "text-fg-strong font-medium", "{user.email}" }
-                    div { class: "text-fg-muted text-xs",
+                    div { class: "flex items-center gap-2 flex-wrap",
+                        span { class: "text-fg-strong font-medium", "{user.email}" }
+                        if user.is_admin { Badge { variant: BadgeVariant::Info, {t!("badge-admin")} } }
+                        if user.banned { Badge { variant: BadgeVariant::Warn, {t!("badge-banned")} } }
+                        if user.access_revoked { Badge { variant: BadgeVariant::Warn, {t!("badge-revoked")} } }
+                    }
+                    div { class: "text-fg-muted text-xs mt-0.5",
                         {t!("users-device-count-simple", count: user.device_count)}
                         if !user.name.is_empty() { " · {user.name}" }
                     }
                 }
-                if user.is_admin { Badge { variant: BadgeVariant::Info, {t!("badge-admin")} } }
-                if user.banned { Badge { variant: BadgeVariant::Warn, {t!("badge-banned")} } }
-                if user.access_revoked { Badge { variant: BadgeVariant::Warn, {t!("badge-revoked")} } }
-            }
-
-            div { class: "flex items-center gap-2 flex-wrap mt-3",
                 Button {
                     variant: ButtonVariant::Secondary,
                     onclick: move |_| async move {
@@ -126,9 +126,9 @@ fn UserCard(
                 }
             }
 
-            div { class: "mt-4 border-t border-line-soft pt-3",
+            div { class: "p-4",
                 if !ifaces.is_empty() {
-                    div { class: "flex items-end gap-2 mb-2 flex-wrap",
+                    div { class: "flex items-end gap-2 mb-3 flex-wrap",
                         select {
                             class: "input text-sm w-40",
                             value: "{sel_iface}",
@@ -175,12 +175,22 @@ fn UserCard(
                 match &*devices.read() {
                     Some(Ok(list)) if list.is_empty() => rsx! { p { class: "text-fg-muted text-xs", {t!("users-no-devices")} } },
                     Some(Ok(list)) => rsx! {
-                        div { class: "flex flex-col gap-1",
+                        div { class: "flex flex-col gap-2",
                             for d in list.clone() {
-                                div { key: "{d.id}", class: "flex items-center gap-2 text-sm",
-                                    span { class: "flex-1 min-w-0 truncate text-fg", "{d.interface_name} · {d.name} · {d.address}" }
-                                    if !d.configured {
-                                        Badge { variant: BadgeVariant::Warn, {t!("badge-unconfigured")} }
+                                div { key: "{d.id}", class: "flex items-center gap-3 border-t border-line-soft pt-2 first:border-0 first:pt-0",
+                                    div { class: "flex-1 min-w-0",
+                                        div { class: "flex items-center gap-2",
+                                            span { class: "text-fg-strong text-sm", { if d.name.is_empty() { t!("device-unnamed") } else { d.name.clone() } } }
+                                            if !d.configured {
+                                                Badge { variant: BadgeVariant::Warn, {t!("badge-unconfigured")} }
+                                            }
+                                        }
+                                        div { class: "text-fg-muted text-xs", "{d.interface_name}" }
+                                        if d.configured {
+                                            div { class: "text-fg-muted text-xs font-mono", "{d.address}" }
+                                        } else {
+                                            div { class: "text-warn text-xs", {t!("device-unconfigured-note")} }
+                                        }
                                     }
                                     DeviceButtons { id: d.id, on_change: move |_| { local += 1; on_change.call(()); }, on_error }
                                 }
