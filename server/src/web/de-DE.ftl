@@ -26,7 +26,24 @@ brand-title = WireGuard VPN
 brand-subtitle = Generator
 nav-devices = Meine Geräte
 nav-interface = Schnittstelle
+nav-groups = Gruppen
 nav-users = Benutzer
+
+## ── Gruppen (Admin) ─────────────────────────────────────────────
+groups-title = Gruppen
+groups-subtitle = Wiederverwendbare Zugriffsregeln. Ein Benutzer gehört zu einer Gruppe, wenn seine E-Mail einem Muster entspricht oder eine seiner OIDC-Claim-Gruppen aufgeführt ist. Schnittstellen gewähren Zugriff durch Zuweisen von Gruppen.
+groups-empty = Noch keine Gruppen.
+groups-create-heading = Neue Gruppe
+group-field-name = Name
+group-field-name-placeholder = z. B. engineering
+group-field-patterns = E-Mail-Muster
+group-field-claims = OIDC-Claim-Werte
+group-claims-help = Werte, die mit der OIDC-Gruppen-Claim eines Benutzers abgeglichen werden (Claim-Pfad pro Anbieter). Beim Login erfasst.
+if-field-groups = Gruppen (Zugriff)
+if-no-groups = Noch keine Gruppen — erstelle eine auf der Gruppen-Seite.
+if-no-groups-assigned = keine
+action-resync = Neu synchronisieren
+action-rename = Umbenennen
 
 ## ── Meine Geräte ────────────────────────────────────────────────
 devices-title = Meine Geräte
@@ -46,6 +63,7 @@ users-empty = Noch keine Benutzer.
 badge-admin = Admin
 badge-banned = gesperrt
 badge-revoked = entzogen
+badge-deactivated = inaktiv
 users-device-count = { $count } / { $limit } Geräte
 users-limit-label = Limit
 users-limit-placeholder = Std.

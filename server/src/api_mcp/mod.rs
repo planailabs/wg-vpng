@@ -57,6 +57,34 @@ fn build_registry(pool: PgPool) -> Registry<PgPool> {
             "Live peer status (handshakes / endpoints) as reported by the backend.",
             |pool, p, i: InterfaceGetInput| async move { interface_status(pool, p, i).await },
         );
+        r.custom(
+            "resync",
+            Risk::Mutating,
+            OnItem::Yes,
+            "Re-sync the interface to its backend now (re-assert desired state).",
+            |pool, p, i: InterfaceGetInput| async move { interface_resync(pool, p, i).await },
+        );
+    }
+
+    {
+        let mut r = reg.resource("groups", "group", "Groups");
+        r.list("List access groups (admin).", |pool, p, i: GroupListInput| async move {
+            group_list(pool, p, i).await
+        });
+        r.get("Get a group (admin).", |pool, p, i: GroupIdInput| async move {
+            group_get(pool, p, i).await
+        });
+        r.create(
+            "Create a group (name, email patterns, OIDC claim values).",
+            |pool, p, i: GroupCreateInput| async move { group_create(pool, p, i).await },
+        );
+        r.update(
+            "Update a group's name / patterns / claim values (re-syncs interfaces using it).",
+            |pool, p, i: GroupUpdateInput| async move { group_update(pool, p, i).await },
+        );
+        r.delete("Delete a group.", |pool, p, i: GroupIdInput| async move {
+            group_delete(pool, p, i).await
+        });
     }
 
     {

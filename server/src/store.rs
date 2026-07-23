@@ -2,11 +2,13 @@
 //! reconciliation and client-config rendering. Shared by the web UI and the API.
 //!
 //! Interfaces are fully admin-managed (no config seeding). Each interface
-//! carries its own backend (self-managed / NetworkManager / MikroTik, secrets
-//! encrypted) and a pattern-based ACL: a user may use an interface iff their
-//! email matches one of the interface's `access_patterns` (globs; `*` = all;
-//! literal emails allowed). Access is enforced live at sync time, so editing
-//! patterns and re-syncing grants/revokes devices in real time.
+//! carries its own backend (secrets encrypted) and references groups
+//! (`wg_groups`). A user may use an interface iff they belong to one of its
+//! groups — email matches a group pattern (globs; `*` = all; empty = nobody) or
+//! one of their captured OIDC claim groups is in the group's `claim_values` —
+//! and is currently *live* (logged in within the provider's TTL). Access is
+//! enforced live at sync time, so group/interface edits + a re-sync grant/revoke
+//! devices in real time.
 
 use anyhow::{Context, Result};
 use sqlx::PgPool;
@@ -34,9 +36,9 @@ pub struct Interface {
     pub keepalive: i32,
     /// Max devices per user on this interface; None = unlimited.
     pub device_limit: Option<i32>,
-    /// Access patterns (globs / literal emails; `*` = everyone). Stored as jsonb.
+    /// Groups whose members may use this interface (union). Stored as jsonb.
     #[sqlx(json)]
-    pub access_patterns: Vec<String>,
+    pub group_ids: Vec<Uuid>,
     /// Per-interface backend (secrets encrypted). Not exposed via serialize.
     #[serde(skip_serializing)]
     #[schemars(skip)]
@@ -44,6 +46,21 @@ pub struct Interface {
     pub backend: BackendConfig,
     /// Last backend reconcile error (None = last sync ok).
     pub last_error: Option<String>,
+}
+
+/// A reusable named set of access rules. A user is a member if their email
+/// matches one of `patterns` OR one of their OIDC claim groups is in
+/// `claim_values`.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, schemars::JsonSchema)]
+pub struct Group {
+    pub id: Uuid,
+    pub name: String,
+    /// Email globs / literal emails; `*` = everyone. Stored as jsonb.
+    #[sqlx(json)]
+    pub patterns: Vec<String>,
+    /// Values matched against a user's OIDC group claim. Stored as jsonb.
+    #[sqlx(json)]
+    pub claim_values: Vec<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, schemars::JsonSchema)]
@@ -57,6 +74,9 @@ pub struct Peer {
     /// PRIVATE key is never stored — it is generated + returned once.
     pub preshared_key: Option<String>,
     pub address: String,
+    /// Whether the end user created this device (vs an admin). Users may rename
+    /// only their own user-created devices.
+    pub user_created: bool,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
@@ -70,8 +90,9 @@ pub struct User {
 }
 
 const IFACE_COLS: &str = "id, name, display_name, listen_port, address, private_key, public_key, endpoint, \
-    dns, allowed_ips, keepalive, device_limit, access_patterns, backend, last_error";
-const PEER_COLS: &str = "id, interface_id, user_id, name, public_key, preshared_key, address";
+    dns, allowed_ips, keepalive, device_limit, group_ids, backend, last_error";
+const GROUP_COLS: &str = "id, name, patterns, claim_values";
+const PEER_COLS: &str = "id, interface_id, user_id, name, public_key, preshared_key, address, user_created";
 const USER_COLS: &str = "id, email, name, is_admin, banned, access_revoked";
 
 /// Default IPv6 pools appended when an interface lacks IPv6 (IPv6 is
@@ -115,6 +136,140 @@ fn glob_match(pat: &str, s: &str) -> bool {
     pi == pat.len()
 }
 
+/// Whether a group grants a user: their email matches a pattern, or one of their
+/// OIDC claim groups is listed in the group's `claim_values`.
+pub fn group_grants(group: &Group, email: &str, claim_groups: &[String]) -> bool {
+    email_matches(&group.patterns, email)
+        || group.claim_values.iter().any(|cv| claim_groups.iter().any(|cg| cg == cv))
+}
+
+/// Whether any of `groups` grants the user.
+pub fn access_granted(groups: &[Group], email: &str, claim_groups: &[String]) -> bool {
+    groups.iter().any(|g| group_grants(g, email, claim_groups))
+}
+
+// ── Groups ────────────────────────────────────────────────────────────
+
+pub async fn list_groups(pool: &PgPool) -> Result<Vec<Group>> {
+    Ok(sqlx::query_as::<_, Group>(&format!("SELECT {GROUP_COLS} FROM wg_groups ORDER BY name"))
+        .fetch_all(pool)
+        .await?)
+}
+
+pub async fn get_group(pool: &PgPool, id: Uuid) -> Result<Option<Group>> {
+    Ok(sqlx::query_as::<_, Group>(&format!("SELECT {GROUP_COLS} FROM wg_groups WHERE id = $1"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?)
+}
+
+/// Load the groups referenced by `ids` (order/absence tolerant).
+pub async fn get_groups(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Group>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    Ok(sqlx::query_as::<_, Group>(&format!(
+        "SELECT {GROUP_COLS} FROM wg_groups WHERE id = ANY($1)"
+    ))
+    .bind(ids)
+    .fetch_all(pool)
+    .await?)
+}
+
+pub async fn create_group(pool: &PgPool, name: &str, patterns: &[String], claim_values: &[String]) -> Result<Group> {
+    sqlx::query_as::<_, Group>(&format!(
+        "INSERT INTO wg_groups (name, patterns, claim_values) VALUES ($1,$2,$3) RETURNING {GROUP_COLS}"
+    ))
+    .bind(name)
+    .bind(sqlx::types::Json(patterns))
+    .bind(sqlx::types::Json(claim_values))
+    .fetch_one(pool)
+    .await
+    .context("create group")
+}
+
+pub async fn update_group(pool: &PgPool, id: Uuid, name: &str, patterns: &[String], claim_values: &[String]) -> Result<Group> {
+    let g = sqlx::query_as::<_, Group>(&format!(
+        "UPDATE wg_groups SET name=$2, patterns=$3, claim_values=$4 WHERE id=$1 RETURNING {GROUP_COLS}"
+    ))
+    .bind(id)
+    .bind(name)
+    .bind(sqlx::types::Json(patterns))
+    .bind(sqlx::types::Json(claim_values))
+    .fetch_one(pool)
+    .await
+    .context("update group")?;
+    // Membership may have changed → re-sync interfaces using this group.
+    sync_groups_interfaces(pool, id).await;
+    Ok(g)
+}
+
+pub async fn delete_group(pool: &PgPool, id: Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM wg_groups WHERE id = $1").bind(id).execute(pool).await?;
+    // Interfaces referencing it lose that grant on the next sync; re-sync now.
+    sync_groups_interfaces(pool, id).await;
+    Ok(())
+}
+
+/// Re-sync (best-effort) every interface that references `group_id`.
+async fn sync_groups_interfaces(pool: &PgPool, group_id: Uuid) {
+    let ifaces = list_interfaces(pool).await.unwrap_or_default();
+    for iface in ifaces {
+        if iface.group_ids.contains(&group_id) {
+            if let Err(e) = sync_interface(pool, iface.id).await {
+                tracing::warn!("sync of interface {} after group change failed: {e:#}", iface.name);
+            }
+        }
+    }
+}
+
+// ── OIDC claim groups (per user, per provider) ────────────────────────
+
+/// Replace the captured group set for `(user, provider)` (called on login).
+pub async fn set_provider_groups(pool: &PgPool, user_id: Uuid, provider: &str, groups: &[String]) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO user_provider_groups (user_id, provider, groups) VALUES ($1,$2,$3) \
+         ON CONFLICT (user_id, provider) DO UPDATE SET groups = EXCLUDED.groups",
+    )
+    .bind(user_id)
+    .bind(provider)
+    .bind(sqlx::types::Json(groups))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Record a login: push the liveliness deadline out by the provider's configured
+/// TTL (default 30d; None = never deactivate). A user whose `live_until` has
+/// passed is deactivated — their devices drop until they log in again.
+pub async fn record_login(pool: &PgPool, user_id: Uuid, ttl_days: Option<u32>) -> Result<()> {
+    let live_sql = match ttl_days {
+        Some(d) => format!("now() + interval '{d} days'"),
+        None => "'infinity'::timestamptz".to_string(),
+    };
+    sqlx::query(&format!("UPDATE users SET live_until = {live_sql} WHERE id = $1"))
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// A user's effective OIDC claim groups: the union across every provider they've
+/// logged in through.
+pub async fn user_claim_groups(pool: &PgPool, user_id: Uuid) -> Result<Vec<String>> {
+    let rows = sqlx::query_scalar::<_, sqlx::types::Json<Vec<String>>>(
+        "SELECT groups FROM user_provider_groups WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for r in rows {
+        set.extend(r.0);
+    }
+    Ok(set.into_iter().collect())
+}
+
 // ── Interfaces ────────────────────────────────────────────────────────
 
 /// Create an interface (admin). Generates a keypair, enforces IPv6, and
@@ -131,7 +286,7 @@ pub async fn create_interface(
     allowed_ips: &str,
     keepalive: i32,
     device_limit: Option<i32>,
-    access_patterns: &[String],
+    group_ids: &[Uuid],
     mut backend: BackendConfig,
 ) -> Result<Interface> {
     backend.encrypt_secrets();
@@ -141,7 +296,7 @@ pub async fn create_interface(
     let iface = sqlx::query_as::<_, Interface>(&format!(
         "INSERT INTO wg_interfaces \
          (name, display_name, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, \
-          keepalive, device_limit, access_patterns, backend) \
+          keepalive, device_limit, group_ids, backend) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING {IFACE_COLS}"
     ))
     .bind(name)
@@ -155,7 +310,7 @@ pub async fn create_interface(
     .bind(&allowed_ips)
     .bind(keepalive)
     .bind(device_limit)
-    .bind(sqlx::types::Json(access_patterns))
+    .bind(sqlx::types::Json(group_ids))
     .bind(sqlx::types::Json(backend))
     .fetch_one(pool)
     .await
@@ -180,13 +335,41 @@ pub async fn get_interface(pool: &PgPool, id: Uuid) -> Result<Option<Interface>>
     .await?)
 }
 
-/// Interfaces a user (by email) may use, per the pattern ACL.
-pub async fn interfaces_for_user(pool: &PgPool, email: &str) -> Result<Vec<Interface>> {
-    Ok(list_interfaces(pool)
+/// Interfaces a user may use: those assigned a group the user belongs to (by
+/// email pattern or OIDC claim group).
+pub async fn interfaces_for_user(pool: &PgPool, user_id: Uuid, email: &str) -> Result<Vec<Interface>> {
+    if !user_is_live(pool, user_id).await? {
+        return Ok(vec![]);
+    }
+    let claim_groups = user_claim_groups(pool, user_id).await?;
+    let mut out = Vec::new();
+    for iface in list_interfaces(pool).await? {
+        let groups = get_groups(pool, &iface.group_ids).await?;
+        if access_granted(&groups, email, &claim_groups) {
+            out.push(iface);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a user is currently live (logged in within the provider TTL).
+pub async fn user_is_live(pool: &PgPool, user_id: Uuid) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, bool>("SELECT live_until > now() FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
         .await?
-        .into_iter()
-        .filter(|i| email_matches(&i.access_patterns, email))
-        .collect())
+        .unwrap_or(false))
+}
+
+/// Whether a user may use an interface: live AND a member of one of its groups.
+pub async fn can_access_interface(pool: &PgPool, user_id: Uuid, email: &str, interface_id: Uuid) -> Result<bool> {
+    if !user_is_live(pool, user_id).await? {
+        return Ok(false);
+    }
+    let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
+    let groups = get_groups(pool, &iface.group_ids).await?;
+    let claim_groups = user_claim_groups(pool, user_id).await?;
+    Ok(access_granted(&groups, email, &claim_groups))
 }
 
 /// Update an interface's policy + presentation (not its name/keys/address).
@@ -200,7 +383,7 @@ pub async fn update_interface(
     allowed_ips: Option<&str>,
     keepalive: Option<i32>,
     device_limit: Option<Option<i32>>,
-    access_patterns: Option<&[String]>,
+    group_ids: Option<&[Uuid]>,
     backend: Option<BackendConfig>,
 ) -> Result<Interface> {
     // Server addresses are immutable after creation (changing them strands
@@ -221,7 +404,7 @@ pub async fn update_interface(
         Some(v) => v,
         None => cur.device_limit,
     };
-    let new_patterns = access_patterns.map(<[String]>::to_vec).unwrap_or(cur.access_patterns);
+    let new_groups = group_ids.map(<[Uuid]>::to_vec).unwrap_or(cur.group_ids);
     let new_backend = match backend {
         Some(mut b) => {
             if b.kind() != cur.backend.kind() {
@@ -248,7 +431,7 @@ pub async fn update_interface(
 
     let iface = sqlx::query_as::<_, Interface>(&format!(
         "UPDATE wg_interfaces SET display_name=$2, endpoint=$3, dns=$4, allowed_ips=$5, keepalive=$6, \
-         device_limit=$7, access_patterns=$8, backend=$9 WHERE id=$1 RETURNING {IFACE_COLS}"
+         device_limit=$7, group_ids=$8, backend=$9 WHERE id=$1 RETURNING {IFACE_COLS}"
     ))
     .bind(id)
     .bind(&new_display)
@@ -257,7 +440,7 @@ pub async fn update_interface(
     .bind(&new_allowed)
     .bind(new_keepalive)
     .bind(new_limit)
-    .bind(sqlx::types::Json(&new_patterns))
+    .bind(sqlx::types::Json(&new_groups))
     .bind(sqlx::types::Json(new_backend))
     .fetch_one(pool)
     .await
@@ -347,13 +530,14 @@ pub async fn create_peer(
     interface_id: Uuid,
     user_id: Option<Uuid>,
     name: &str,
+    user_created: bool,
 ) -> Result<(Peer, String)> {
     let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
     let subnets = wg::parse_subnets(&iface.address).map_err(anyhow::Error::msg)?;
     let taken: Vec<String> =
         list_peers(pool, interface_id).await?.into_iter().map(|p| p.address).collect();
     let address = wg::allocate_addresses(&subnets, &taken).map_err(anyhow::Error::msg)?;
-    insert_peer(pool, interface_id, user_id, name, &address).await
+    insert_peer(pool, interface_id, user_id, name, &address, user_created).await
 }
 
 /// Resolve an admin-supplied device address spec to a concrete address. A bare
@@ -382,7 +566,7 @@ pub async fn create_peer_with_address(
     address_spec: &str,
 ) -> Result<(Peer, String)> {
     let address = resolve_admin_address(pool, interface_id, address_spec).await?;
-    insert_peer(pool, interface_id, user_id, name, &address).await
+    insert_peer(pool, interface_id, user_id, name, &address, false).await
 }
 
 /// Create an *unconfigured* device (admin): no key is generated, so the user
@@ -406,8 +590,8 @@ pub async fn create_peer_unconfigured(
         }
     };
     sqlx::query_as::<_, Peer>(&format!(
-        "INSERT INTO wg_peers (interface_id, user_id, name, public_key, preshared_key, address) \
-         VALUES ($1,$2,$3,'',NULL,$4) RETURNING {PEER_COLS}"
+        "INSERT INTO wg_peers (interface_id, user_id, name, public_key, preshared_key, address, user_created) \
+         VALUES ($1,$2,$3,'',NULL,$4,false) RETURNING {PEER_COLS}"
     ))
     .bind(interface_id)
     .bind(user_id)
@@ -426,13 +610,14 @@ async fn insert_peer(
     user_id: Option<Uuid>,
     name: &str,
     address: &str,
+    user_created: bool,
 ) -> Result<(Peer, String)> {
     let kp = wg::generate_keypair();
     let psk = wg::generate_preshared_key();
     let peer = sqlx::query_as::<_, Peer>(&format!(
         "INSERT INTO wg_peers \
-         (interface_id, user_id, name, public_key, preshared_key, address) \
-         VALUES ($1,$2,$3,$4,$5,$6) RETURNING {PEER_COLS}"
+         (interface_id, user_id, name, public_key, preshared_key, address, user_created) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING {PEER_COLS}"
     ))
     .bind(interface_id)
     .bind(user_id)
@@ -440,6 +625,7 @@ async fn insert_peer(
     .bind(&kp.public_key)
     .bind(&psk)
     .bind(address)
+    .bind(user_created)
     .fetch_one(pool)
     .await
     .context("insert peer")?;
@@ -502,6 +688,8 @@ pub async fn upsert_user_by_email(pool: &PgPool, email: &str) -> Result<Uuid> {
 pub struct UserWithCount {
     pub user: User,
     pub device_count: i64,
+    /// Liveliness lapsed (login TTL passed) — access is suspended until re-login.
+    pub deactivated: bool,
 }
 
 pub async fn get_user(pool: &PgPool, id: Uuid) -> Result<Option<User>> {
@@ -523,7 +711,8 @@ pub async fn list_users_with_counts(pool: &PgPool) -> Result<Vec<UserWithCount>>
                 .bind(user.id)
                 .fetch_one(pool)
                 .await?;
-        out.push(UserWithCount { user, device_count });
+        let deactivated = !user_is_live(pool, user.id).await?;
+        out.push(UserWithCount { user, device_count, deactivated });
     }
     Ok(out)
 }
@@ -562,6 +751,7 @@ pub async fn delete_user(pool: &PgPool, user_id: Uuid) -> Result<()> {
 /// grant/revoke devices in real time.
 pub async fn list_active_peers(pool: &PgPool, interface_id: Uuid) -> Result<Vec<Peer>> {
     let iface = get_interface(pool, interface_id).await?.context("interface not found")?;
+    let groups = get_groups(pool, &iface.group_ids).await?;
     let peers = list_peers(pool, interface_id).await?;
     let mut out = Vec::with_capacity(peers.len());
     for p in peers {
@@ -572,15 +762,16 @@ pub async fn list_active_peers(pool: &PgPool, interface_id: Uuid) -> Result<Vec<
         match p.user_id {
             None => out.push(p),
             Some(uid) => {
-                if let Some((email, banned, revoked)) =
-                    sqlx::query_as::<_, (String, bool, bool)>(
-                        "SELECT email, banned, access_revoked FROM users WHERE id = $1",
+                if let Some((email, banned, revoked, live)) =
+                    sqlx::query_as::<_, (String, bool, bool, bool)>(
+                        "SELECT email, banned, access_revoked, live_until > now() FROM users WHERE id = $1",
                     )
                     .bind(uid)
                     .fetch_optional(pool)
                     .await?
                 {
-                    if !banned && !revoked && email_matches(&iface.access_patterns, &email) {
+                    let claim_groups = user_claim_groups(pool, uid).await?;
+                    if !banned && !revoked && live && access_granted(&groups, &email, &claim_groups) {
                         out.push(p);
                     }
                 }
@@ -721,7 +912,10 @@ mod tests {
         }
     }
 
+    /// Create an interface whose access comes from a single group named `acl`
+    /// carrying `patterns`. Returns the interface; the group is fetchable by name.
     async fn mk_iface(pool: &PgPool, patterns: &[String], addr: &str) -> Interface {
+        let g = create_group(pool, "acl", patterns, &[]).await.unwrap();
         create_interface(
             pool,
             "wg0",
@@ -733,11 +927,15 @@ mod tests {
             "10.8.0.0/24",
             25,
             Some(5),
-            patterns,
+            &[g.id],
             BackendConfig::SelfManaged,
         )
         .await
         .unwrap()
+    }
+
+    async fn group_id_by_name(pool: &PgPool, name: &str) -> Uuid {
+        list_groups(pool).await.unwrap().into_iter().find(|g| g.name == name).unwrap().id
     }
 
     #[tokio::test]
@@ -747,7 +945,7 @@ mod tests {
         sqlx::migrate!().run(&pool).await.unwrap();
 
         let iface = mk_iface(&pool, &["*".into()], "10.8.0.1/24, fd00:8::1/64").await;
-        let (p, privkey) = create_peer(&pool, iface.id, None, "dual").await.unwrap();
+        let (p, privkey) = create_peer(&pool, iface.id, None, "dual", false).await.unwrap();
         assert_eq!(p.address, "10.8.0.2/32, fd00:8::2/128");
         assert_eq!(privkey.len(), 44); // returned once, not stored
 
@@ -775,8 +973,8 @@ mod tests {
         let mallory: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('mallory@evil.com') RETURNING id")
             .fetch_one(&pool).await.unwrap();
 
-        create_peer(&pool, iface.id, Some(alice), "a").await.unwrap();
-        create_peer(&pool, iface.id, Some(mallory), "m").await.unwrap();
+        create_peer(&pool, iface.id, Some(alice), "a", false).await.unwrap();
+        create_peer(&pool, iface.id, Some(mallory), "m", false).await.unwrap();
 
         // Only alice's device is active (mallory doesn't match the pattern).
         let active = list_active_peers(&pool, iface.id).await.unwrap();
@@ -795,10 +993,11 @@ mod tests {
             .unwrap();
         assert_eq!(backend.applied.lock().unwrap().len(), 1);
 
-        // Widen the pattern -> mallory now active.
-        update_interface(&pool, iface.id, None, None, None, None, None, None, Some(&["*".into()]), None)
-            .await
-            .unwrap();
+        // Widen the group's patterns -> mallory now active. (Raw SQL keeps the
+        // test hermetic; update_group would trigger a real backend sync.)
+        let gid = group_id_by_name(&pool, "acl").await;
+        sqlx::query("UPDATE wg_groups SET patterns = '[\"*\"]'::jsonb WHERE id = $1")
+            .bind(gid).execute(&pool).await.unwrap();
         assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 2);
 
         // Ban alice -> back to 1.
@@ -813,20 +1012,21 @@ mod tests {
         sqlx::migrate!().run(&pool).await.unwrap();
 
         let a = mk_iface(&pool, &["*".into()], "10.8.0.1/24").await;
-        // A second interface with a different name/subnet.
-        let b = create_interface(&pool, "wg1", "", 51821, "10.9.0.1/24", "vpn:51821", None, "10.9.0.0/24", 25, Some(2), &["*".into()], BackendConfig::SelfManaged).await.unwrap();
+        // A second interface sharing the same "everyone" group.
+        let gid = group_id_by_name(&pool, "acl").await;
+        let b = create_interface(&pool, "wg1", "", 51821, "10.9.0.1/24", "vpn:51821", None, "10.9.0.0/24", 25, Some(2), &[gid], BackendConfig::SelfManaged).await.unwrap();
 
         let u: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
             .fetch_one(&pool).await.unwrap();
-        create_peer(&pool, a.id, Some(u), "d1").await.unwrap();
-        create_peer(&pool, a.id, Some(u), "d2").await.unwrap();
-        create_peer(&pool, b.id, Some(u), "d3").await.unwrap();
+        create_peer(&pool, a.id, Some(u), "d1", true).await.unwrap();
+        create_peer(&pool, a.id, Some(u), "d2", true).await.unwrap();
+        create_peer(&pool, b.id, Some(u), "d3", true).await.unwrap();
 
         assert_eq!(count_user_devices_on_interface(&pool, a.id, u).await.unwrap(), 2);
         assert_eq!(count_user_devices_on_interface(&pool, b.id, u).await.unwrap(), 1);
 
-        // interfaces_for_user sees both (both are `*`).
-        assert_eq!(interfaces_for_user(&pool, "u@x").await.unwrap().len(), 2);
+        // interfaces_for_user sees both (both reference the `*` group).
+        assert_eq!(interfaces_for_user(&pool, u, "u@x").await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -853,5 +1053,102 @@ mod tests {
         assert_eq!(d1b.address, d1.address);
         assert_eq!(privkey.len(), 44);
         assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn group_grants_by_pattern_or_claim() {
+        let g = Group {
+            id: Uuid::nil(),
+            name: "eng".into(),
+            patterns: vec!["*@corp.com".into()],
+            claim_values: vec!["engineering".into()],
+        };
+        // Email pattern.
+        assert!(group_grants(&g, "alice@corp.com", &[]));
+        // Claim group.
+        assert!(group_grants(&g, "bob@other.com", &["engineering".into()]));
+        // Neither.
+        assert!(!group_grants(&g, "bob@other.com", &["sales".into()]));
+        assert!(access_granted(&[g.clone()], "x@corp.com", &[]));
+        assert!(!access_granted(&[], "x@corp.com", &["engineering".into()]));
+    }
+
+    #[tokio::test]
+    async fn claim_groups_union_across_providers_and_gate_access() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        // Interface access via a claim-only group.
+        let g = create_group(&pool, "eng", &[], &["engineering".into()]).await.unwrap();
+        let iface = create_interface(&pool, "wg0", "", 51820, "10.8.0.1/24, fd00:8::1/64",
+            "vpn:51820", None, "10.8.0.0/24", 25, Some(5), &[g.id], BackendConfig::SelfManaged).await.unwrap();
+
+        let u: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
+        create_peer(&pool, iface.id, Some(u), "d", true).await.unwrap();
+
+        // No claims yet -> not active.
+        assert!(list_active_peers(&pool, iface.id).await.unwrap().is_empty());
+        assert!(interfaces_for_user(&pool, u, "u@x").await.unwrap().is_empty());
+
+        // Google login has no groups; plan.ai login carries "engineering".
+        set_provider_groups(&pool, u, "google", &[]).await.unwrap();
+        set_provider_groups(&pool, u, "planai", &["engineering".into()]).await.unwrap();
+        assert_eq!(user_claim_groups(&pool, u).await.unwrap(), vec!["engineering".to_string()]);
+        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 1);
+        assert_eq!(interfaces_for_user(&pool, u, "u@x").await.unwrap().len(), 1);
+
+        // Re-login via plan.ai without the group revokes (that provider's set is replaced).
+        set_provider_groups(&pool, u, "planai", &[]).await.unwrap();
+        assert!(list_active_peers(&pool, iface.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn liveliness_deactivates_stale_accounts() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let iface = mk_iface(&pool, &["*".into()], "10.8.0.1/24").await;
+        let u: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
+        create_peer(&pool, iface.id, Some(u), "d", true).await.unwrap();
+
+        // Fresh users default to live (infinity) -> active.
+        assert!(user_is_live(&pool, u).await.unwrap());
+        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 1);
+
+        // Liveliness lapses -> account deactivated -> devices drop.
+        sqlx::query("UPDATE users SET live_until = now() - interval '1 hour' WHERE id = $1")
+            .bind(u).execute(&pool).await.unwrap();
+        assert!(!user_is_live(&pool, u).await.unwrap());
+        assert!(list_active_peers(&pool, iface.id).await.unwrap().is_empty());
+        assert!(interfaces_for_user(&pool, u, "u@x").await.unwrap().is_empty());
+
+        // Logging in again pushes the deadline out -> reactivated.
+        record_login(&pool, u, Some(30)).await.unwrap();
+        assert!(user_is_live(&pool, u).await.unwrap());
+        assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn user_created_flag_tracks_origin() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let iface = mk_iface(&pool, &["*".into()], "10.8.0.1/24").await;
+        let u: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
+            .fetch_one(&pool).await.unwrap();
+
+        let (mine, _) = create_peer(&pool, iface.id, Some(u), "mine", true).await.unwrap();
+        let (admins, _) = create_peer_with_address(&pool, iface.id, Some(u), "admins", "fd00:1::/64").await.unwrap();
+        assert!(mine.user_created);
+        assert!(!admins.user_created);
+        // Rename keeps the flag.
+        let renamed = rename_peer(&pool, mine.id, "laptop").await.unwrap();
+        assert_eq!(renamed.name, "laptop");
+        assert!(renamed.user_created);
     }
 }

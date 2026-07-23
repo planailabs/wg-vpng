@@ -91,6 +91,26 @@ impl UserResolver for PgUserResolver {
         Ok(WebUser { id, email, name, is_admin, org_memberships, impersonating_from: None })
     }
 
+    async fn resolve_user_ctx(
+        &self,
+        email: &str,
+        name: Option<&str>,
+        admin_emails: &[String],
+        auto_join_orgs: &[String],
+        provider_slug: &str,
+        groups: &[String],
+        liveliness_days: Option<u32>,
+    ) -> Result<WebUser, anyhow::Error> {
+        let user = self.resolve_user(email, name, admin_emails, auto_join_orgs).await?;
+        // Capture this provider's OIDC group claim (union across providers) and
+        // refresh liveliness (default 30d) so activity keeps the account live.
+        if !provider_slug.is_empty() {
+            crate::store::set_provider_groups(&self.pool, user.id, provider_slug, groups).await?;
+        }
+        crate::store::record_login(&self.pool, user.id, liveliness_days.or(Some(30))).await?;
+        Ok(user)
+    }
+
     async fn load_user_by_id(&self, id: Uuid) -> Result<Option<WebUser>, anyhow::Error> {
         let Some((id, email, name, is_admin)) =
             sqlx::query_as::<_, (Uuid, String, String, bool)>(

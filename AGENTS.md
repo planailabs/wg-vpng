@@ -43,11 +43,23 @@ The release package builds with `dx build --fullstack` and the patched
 - **Server addresses and the backend *type* are immutable** after interface
   creation (enforced in `store::update_interface`); MikroTik/node credentials
   can still be edited (blank secret = keep the stored one).
-- **Access is pattern-only** (`store::email_matches`): a user can use an
-  interface iff their email matches its `access_patterns` (`*` = all; literal
-  emails allowed; empty = nobody). No manual grants. `list_active_peers` filters
-  by this, so editing patterns + a sync grants/revokes in real time. Any peer
-  mutation, pattern edit, or ban/revoke triggers a sync.
+- **Access is group-based** (`store::access_granted`): an interface references
+  `group_ids`; a user may use it iff they're a member of one of those **groups**
+  (`wg_groups`: reusable `patterns` + `claim_values`). Membership = email matches
+  a group pattern (`*` = all; empty = nobody) **or** one of the user's captured
+  OIDC claim groups is in the group's `claim_values`. No manual grants.
+  `list_active_peers` filters by this, so editing a group/interface + a sync
+  grants/revokes in real time; any peer mutation, group edit, ban/revoke, or the
+  admin **re-sync** triggers a sync.
+- **OIDC claim groups** are captured at login per `(user, provider)` from the
+  provider's configured `groups_claim` (union across providers; forward-only, no
+  backsync). **Liveliness**: each login pushes `users.live_until` out by the
+  provider's `liveliness_days` (default 30); a lapsed user is deactivated (devices
+  drop) until they log in again. Both flow through the non-breaking
+  `plan-ai-auth` `UserResolver::resolve_user_ctx` (see `server/src/web/auth.rs`).
+- **Devices** carry `user_created`: users may rename only their own user-created
+  devices; admins may rename any. Admins may create a device in *unconfigured*
+  mode (no key) for the user to generate.
 - **Secrets** (MikroTik password, node API key) are encrypted at rest
   (`server/src/crypto.rs`, AES-256-GCM) with the key from `[secrets]
   encryption_key`. Never store or log a credential in plaintext; encrypt via

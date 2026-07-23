@@ -5,6 +5,7 @@ use dioxus_i18n::prelude::*;
 use dioxus_i18n::unic_langid::langid;
 
 use super::components::admin::Admin;
+use super::components::groups::Groups;
 use super::components::interfaces::Interfaces;
 use super::components::layout::Layout;
 use super::components::my_config::MyConfig;
@@ -16,6 +17,8 @@ pub enum Route {
     MyConfig {},
     #[route("/interfaces")]
     Interfaces {},
+    #[route("/groups")]
+    Groups {},
     #[route("/admin")]
     Admin {},
 }

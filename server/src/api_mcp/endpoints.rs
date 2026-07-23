@@ -104,7 +104,7 @@ pub struct InterfaceOutput {
     pub allowed_ips: String,
     pub keepalive: i32,
     pub device_limit: Option<i32>,
-    pub access_patterns: Vec<String>,
+    pub group_ids: Vec<Uuid>,
     pub backend_kind: String,
     /// MikroTik url (no password), when applicable.
     pub mikrotik_url: Option<String>,
@@ -131,7 +131,7 @@ fn iface_output(i: &store::Interface) -> InterfaceOutput {
         allowed_ips: i.allowed_ips.clone(),
         keepalive: i.keepalive,
         device_limit: i.device_limit,
-        access_patterns: i.access_patterns.clone(),
+        group_ids: i.group_ids.clone(),
         backend_kind: i.backend.kind().to_string(),
         mikrotik_url: url,
         mikrotik_username: user,
@@ -204,9 +204,9 @@ pub struct InterfaceCreateInput {
     /// Max devices per user on this interface; null = unlimited.
     #[serde(default)]
     pub device_limit: Option<i32>,
-    /// Access patterns (globs / literal emails; `*` = everyone). Empty = nobody.
+    /// Groups whose members may use this interface (by id).
     #[serde(default)]
-    pub access_patterns: Vec<String>,
+    pub group_ids: Vec<Uuid>,
     pub backend: BackendInput,
 }
 
@@ -228,7 +228,7 @@ pub async fn interface_create(
         &i.allowed_ips,
         i.keepalive,
         i.device_limit,
-        &i.access_patterns,
+        &i.group_ids,
         backend,
     )
     .await
@@ -255,9 +255,9 @@ pub struct InterfaceUpdateInput {
     pub keepalive: Option<i32>,
     #[serde(default)]
     pub device_limit: Option<i32>,
-    /// Replace the access patterns (real-time grant/revoke on sync).
+    /// Replace the assigned groups (real-time grant/revoke on sync).
     #[serde(default)]
-    pub access_patterns: Option<Vec<String>>,
+    pub group_ids: Option<Vec<Uuid>>,
     /// Replace the backend.
     #[serde(default)]
     pub backend: Option<BackendInput>,
@@ -284,7 +284,7 @@ pub async fn interface_update(
         i.allowed_ips.as_deref(),
         i.keepalive,
         i.device_limit.map(Some),
-        i.access_patterns.as_deref(),
+        i.group_ids.as_deref(),
         backend,
     )
     .await
@@ -450,7 +450,7 @@ pub async fn peer_create(
 
     let (peer, private_key) = match addr {
         Some(a) => store::create_peer_with_address(&pool, iface.id, user_id, &name, a).await,
-        None => store::create_peer(&pool, iface.id, user_id, &name).await,
+        None => store::create_peer(&pool, iface.id, user_id, &name, false).await,
     }
     .map_err(internal)?;
     sync(&pool, iface.id).await?;
@@ -677,4 +677,119 @@ pub async fn user_delete(
     store::delete_user(&pool, i.id).await.map_err(internal)?;
     sync_all(&pool).await?;
     Ok(DeleteOutput { deleted: true })
+}
+
+// ── Groups ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct GroupOutput {
+    pub id: Uuid,
+    pub name: String,
+    /// Email globs / literal emails; `*` = everyone.
+    pub patterns: Vec<String>,
+    /// Values matched against a user's OIDC group claim.
+    pub claim_values: Vec<String>,
+}
+
+fn group_output(g: &store::Group) -> GroupOutput {
+    GroupOutput {
+        id: g.id,
+        name: g.name.clone(),
+        patterns: g.patterns.clone(),
+        claim_values: g.claim_values.clone(),
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GroupListInput {}
+
+pub async fn group_list(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    _i: GroupListInput,
+) -> Result<Vec<GroupOutput>, ApiError> {
+    p.require_admin()?;
+    Ok(store::list_groups(&pool).await.map_err(internal)?.iter().map(group_output).collect())
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GroupIdInput {
+    pub id: Uuid,
+}
+
+pub async fn group_get(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: GroupIdInput,
+) -> Result<GroupOutput, ApiError> {
+    p.require_admin()?;
+    let g = store::get_group(&pool, i.id).await.map_err(internal)?.ok_or_else(|| ApiError::not_found("group not found"))?;
+    Ok(group_output(&g))
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GroupCreateInput {
+    pub name: String,
+    #[serde(default)]
+    pub patterns: Vec<String>,
+    #[serde(default)]
+    pub claim_values: Vec<String>,
+}
+
+pub async fn group_create(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: GroupCreateInput,
+) -> Result<GroupOutput, ApiError> {
+    p.require_admin()?;
+    let g = store::create_group(&pool, i.name.trim(), &i.patterns, &i.claim_values).await.map_err(internal)?;
+    Ok(group_output(&g))
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GroupUpdateInput {
+    pub id: Uuid,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub patterns: Option<Vec<String>>,
+    #[serde(default)]
+    pub claim_values: Option<Vec<String>>,
+}
+
+pub async fn group_update(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: GroupUpdateInput,
+) -> Result<GroupOutput, ApiError> {
+    p.require_admin()?;
+    let cur = store::get_group(&pool, i.id).await.map_err(internal)?.ok_or_else(|| ApiError::not_found("group not found"))?;
+    let name = i.name.unwrap_or(cur.name);
+    let patterns = i.patterns.unwrap_or(cur.patterns);
+    let claim_values = i.claim_values.unwrap_or(cur.claim_values);
+    let g = store::update_group(&pool, i.id, name.trim(), &patterns, &claim_values).await.map_err(internal)?;
+    Ok(group_output(&g))
+}
+
+pub async fn group_delete(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: GroupIdInput,
+) -> Result<DeleteOutput, ApiError> {
+    p.require_admin()?;
+    store::delete_group(&pool, i.id).await.map_err(internal)?;
+    Ok(DeleteOutput { deleted: true })
+}
+
+/// Re-sync an interface to its backend now (re-assert desired state).
+pub async fn interface_resync(
+    pool: PgPool,
+    p: std::sync::Arc<Principal>,
+    i: InterfaceGetInput,
+) -> Result<InterfaceOutput, ApiError> {
+    p.require_admin()?;
+    let iface = resolve_interface(&pool, i.id).await?;
+    sync(&pool, iface.id).await?;
+    let iface = resolve_interface(&pool, Some(iface.id)).await?;
+    Ok(iface_output(&iface))
 }

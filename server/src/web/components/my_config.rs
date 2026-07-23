@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::web::components::ui::{ConfigPanel, PageHeader};
 use crate::web::dto::{InterfaceAccessView, PeerView};
-use crate::web::server_fns::{create_my_device, delete_peer, list_my_interfaces, my_devices, regenerate_peer};
+use crate::web::server_fns::{create_my_device, delete_peer, list_my_interfaces, my_devices, regenerate_peer, rename_device};
 
 #[component]
 pub fn MyConfig() -> Element {
@@ -130,6 +130,7 @@ fn InterfaceSection(
                             name: peer.name.clone(),
                             address: peer.address.clone(),
                             configured: peer.configured,
+                            user_created: peer.user_created,
                             on_change: move |_| on_change.call(()),
                             on_show: move |c: (String, String)| on_show.call(c),
                             on_error: move |e: String| on_error.call(e),
@@ -147,19 +148,51 @@ fn DeviceRow(
     name: String,
     address: String,
     configured: bool,
+    user_created: bool,
     on_change: EventHandler<()>,
     on_show: EventHandler<(String, String)>,
     on_error: EventHandler<String>,
 ) -> Element {
-    let display_name = if name.is_empty() { t!("device-unnamed") } else { name };
+    let display_name = if name.is_empty() { t!("device-unnamed") } else { name.clone() };
+    let mut renaming = use_signal(|| false);
+    let mut new_name = use_signal(|| name.clone());
     rsx! {
         div { class: "flex items-center gap-3 border-t border-line-soft pt-2 first:border-0 first:pt-0",
             div { class: "flex-1 min-w-0",
-                div { class: "text-fg-strong text-sm", "{display_name}" }
+                if renaming() {
+                    input {
+                        class: "input text-sm w-48",
+                        value: "{new_name}",
+                        oninput: move |e| new_name.set(e.value()),
+                    }
+                } else {
+                    div { class: "text-fg-strong text-sm", "{display_name}" }
+                }
                 if configured {
                     div { class: "text-fg-muted text-xs font-mono", "{address}" }
                 } else {
                     div { class: "text-warn text-xs", {t!("device-unconfigured-note")} }
+                }
+            }
+            // Users may rename only their own user-created devices.
+            if user_created {
+                if renaming() {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| async move {
+                            match rename_device(id, new_name()).await {
+                                Ok(()) => { renaming.set(false); on_change.call(()); }
+                                Err(e) => on_error.call(e.to_string()),
+                            }
+                        },
+                        {t!("action-save")}
+                    }
+                } else {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| renaming.set(true),
+                        {t!("action-rename")}
+                    }
                 }
             }
             Button {

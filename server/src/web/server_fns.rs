@@ -4,7 +4,8 @@
 use dioxus::prelude::*;
 
 use super::dto::{
-    CurrentUser, InterfaceAccessView, InterfaceAdminView, NewDeviceView, PeerView, UserAdminView,
+    CurrentUser, GroupView, InterfaceAccessView, InterfaceAdminView, NewDeviceView, PeerView,
+    UserAdminView,
 };
 use uuid::Uuid;
 
@@ -22,7 +23,7 @@ pub async fn list_my_interfaces() -> Result<Vec<InterfaceAccessView>, ServerFnEr
     let pool = crate::server_state::pool()?;
     let user = crate::web::user::current_user().await?;
     let uid = crate::web::user::current_user_id(&pool, &user).await?;
-    let ifaces = crate::store::interfaces_for_user(&pool, &user.email).await.map_err(err)?;
+    let ifaces = crate::store::interfaces_for_user(&pool, uid, &user.email).await.map_err(err)?;
     let mut out = Vec::with_capacity(ifaces.len());
     for i in ifaces {
         let used = crate::store::count_user_devices_on_interface(&pool, i.id, uid).await.map_err(err)?;
@@ -54,8 +55,8 @@ pub async fn create_my_device(interface_id: Uuid, name: String) -> Result<NewDev
         .await
         .map_err(err)?
         .ok_or_else(|| ServerFnError::new("interface not found"))?;
-    // Access is pattern-derived.
-    if !crate::store::email_matches(&iface.access_patterns, &user.email) {
+    // Access is group-derived (email pattern or OIDC claim group).
+    if !crate::store::can_access_interface(&pool, uid, &user.email, interface_id).await.map_err(err)? {
         return Err(ServerFnError::new("you do not have access to this interface"));
     }
     if let Some(limit) = iface.device_limit {
@@ -65,7 +66,7 @@ pub async fn create_my_device(interface_id: Uuid, name: String) -> Result<NewDev
         }
     }
     let (peer, private_key) =
-        crate::store::create_peer(&pool, interface_id, Some(uid), &name).await.map_err(err)?;
+        crate::store::create_peer(&pool, interface_id, Some(uid), &name, true).await.map_err(err)?;
     sync(&pool, interface_id).await?;
     let config = crate::store::render_peer_config(&iface, &peer, &private_key);
     let qr_svg = crate::store::config_qr_svg(&config);
@@ -132,7 +133,7 @@ pub async fn admin_create_interface(
     allowed_ips: String,
     keepalive: i32,
     device_limit: Option<i32>,
-    access_patterns: Vec<String>,
+    group_ids: Vec<Uuid>,
     backend_kind: String,
     mikrotik_url: String,
     mikrotik_username: String,
@@ -144,7 +145,6 @@ pub async fn admin_create_interface(
     let pool = crate::server_state::pool()?;
     require_admin(&pool).await?;
     let backend = build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure, &node_url, &node_key)?;
-    let patterns = clean_patterns(access_patterns);
     let iface = crate::store::create_interface(
         &pool,
         &name,
@@ -156,7 +156,7 @@ pub async fn admin_create_interface(
         &allowed_ips,
         keepalive,
         device_limit,
-        &patterns,
+        &group_ids,
         backend,
     )
     .await
@@ -175,7 +175,7 @@ pub async fn admin_update_interface(
     allowed_ips: String,
     keepalive: i32,
     device_limit: Option<i32>,
-    access_patterns: Vec<String>,
+    group_ids: Vec<Uuid>,
     backend_kind: String,
     mikrotik_url: String,
     mikrotik_username: String,
@@ -189,7 +189,6 @@ pub async fn admin_update_interface(
     // The backend *type* is immutable (enforced in the store); credentials may be
     // updated. A blank MikroTik password / node key keeps the stored one.
     let backend = Some(build_backend_config(&backend_kind, &mikrotik_url, &mikrotik_username, &mikrotik_password, mikrotik_insecure, &node_url, &node_key)?);
-    let patterns = clean_patterns(access_patterns);
     crate::store::update_interface(
         &pool,
         id,
@@ -199,7 +198,7 @@ pub async fn admin_update_interface(
         Some(&allowed_ips),
         Some(keepalive),
         Some(device_limit),
-        Some(&patterns),
+        Some(&group_ids),
         backend,
     )
     .await
@@ -231,8 +230,77 @@ pub async fn admin_list_users() -> Result<Vec<UserAdminView>, ServerFnError> {
             banned: r.user.banned,
             access_revoked: r.user.access_revoked,
             device_count: r.device_count,
+            deactivated: r.deactivated,
         })
         .collect())
+}
+
+// ── Groups (admin) ────────────────────────────────────────────────────
+
+#[cfg(feature = "server")]
+fn group_view(g: crate::store::Group) -> GroupView {
+    GroupView { id: g.id, name: g.name, patterns: g.patterns, claim_values: g.claim_values }
+}
+
+#[server]
+pub async fn admin_list_groups() -> Result<Vec<GroupView>, ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    Ok(crate::store::list_groups(&pool).await.map_err(err)?.into_iter().map(group_view).collect())
+}
+
+#[server]
+pub async fn admin_create_group(name: String, patterns: Vec<String>, claim_values: Vec<String>) -> Result<(), ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    crate::store::create_group(&pool, name.trim(), &clean_patterns(patterns), &clean_patterns(claim_values))
+        .await
+        .map_err(err)?;
+    Ok(())
+}
+
+#[server]
+pub async fn admin_update_group(id: Uuid, name: String, patterns: Vec<String>, claim_values: Vec<String>) -> Result<(), ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    // update_group re-syncs interfaces using the group (real-time grant/revoke).
+    crate::store::update_group(&pool, id, name.trim(), &clean_patterns(patterns), &clean_patterns(claim_values))
+        .await
+        .map_err(err)?;
+    Ok(())
+}
+
+#[server]
+pub async fn admin_delete_group(id: Uuid) -> Result<(), ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    crate::store::delete_group(&pool, id).await.map_err(err)?;
+    Ok(())
+}
+
+/// Re-sync an interface to its backend now (admin) — e.g. after an out-of-band
+/// change or to re-assert state on a freshly-connected router/node.
+#[server]
+pub async fn admin_resync_interface(id: Uuid) -> Result<(), ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    require_admin(&pool).await?;
+    sync(&pool, id).await
+}
+
+/// Rename a device. Admins may rename any device; users only their own
+/// user-created devices.
+#[server]
+pub async fn rename_device(id: Uuid, name: String) -> Result<(), ServerFnError> {
+    let pool = crate::server_state::pool()?;
+    let user = crate::web::user::current_user().await?;
+    let peer = authorize_peer(&pool, id).await?;
+    if !user.is_admin && !peer.user_created {
+        return Err(ServerFnError::new(
+            "this device was provisioned by an admin and can't be renamed here",
+        ));
+    }
+    crate::store::rename_peer(&pool, id, name.trim()).await.map_err(err)?;
+    Ok(())
 }
 
 #[server]
@@ -280,7 +348,7 @@ pub async fn admin_create_device(
 
     let (peer, private_key) = match addr_opt {
         Some(a) => crate::store::create_peer_with_address(&pool, interface_id, Some(user_id), &name, a).await,
-        None => crate::store::create_peer(&pool, interface_id, Some(user_id), &name).await,
+        None => crate::store::create_peer(&pool, interface_id, Some(user_id), &name, false).await,
     }
     .map_err(err)?;
     sync(&pool, interface_id).await?;
@@ -388,7 +456,7 @@ fn iface_admin_view(i: &crate::store::Interface) -> InterfaceAdminView {
         allowed_ips: i.allowed_ips.clone(),
         keepalive: i.keepalive,
         device_limit: i.device_limit,
-        access_patterns: i.access_patterns.clone(),
+        group_ids: i.group_ids.clone(),
         backend_kind: i.backend.kind().to_string(),
         mikrotik_url: url,
         mikrotik_username: user,
@@ -420,6 +488,7 @@ async fn peer_view(
         public_key: p.public_key,
         owner_email,
         configured,
+        user_created: p.user_created,
     })
 }
 

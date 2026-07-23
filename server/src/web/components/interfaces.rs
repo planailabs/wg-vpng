@@ -1,6 +1,8 @@
 //! Admin interfaces page: full CRUD. Each interface has its own backend
-//! (self-managed / NetworkManager / MikroTik), a per-user device limit, and a
-//! pattern-based ACL. Backend bring-up failures are surfaced per interface.
+//! (self-managed / NetworkManager / systemd-networkd / MikroTik / node), a
+//! per-user device limit, and one or more assigned groups (its ACL — groups are
+//! managed on the Groups page). Backend bring-up failures are surfaced per
+//! interface, with a manual re-sync.
 
 use dioxus::prelude::*;
 use dioxus_i18n::t;
@@ -10,7 +12,8 @@ use uuid::Uuid;
 use crate::web::components::ui::PageHeader;
 use crate::web::dto::InterfaceAdminView;
 use crate::web::server_fns::{
-    admin_create_interface, admin_delete_interface, admin_list_interfaces, admin_update_interface,
+    admin_create_interface, admin_delete_interface, admin_list_groups, admin_list_interfaces,
+    admin_resync_interface, admin_update_interface,
 };
 
 #[component]
@@ -20,7 +23,14 @@ pub fn Interfaces() -> Element {
         let _ = refresh();
         async move { admin_list_interfaces().await }
     })?;
+    let groups = use_server_future(admin_list_groups)?;
     let mut error = use_signal(|| Option::<String>::None);
+
+    // (id, name) pairs for the group selector.
+    let group_opts: Vec<(Uuid, String)> = match &*groups.read() {
+        Some(Ok(l)) => l.iter().map(|g| (g.id, g.name.clone())).collect(),
+        _ => vec![],
+    };
 
     rsx! {
         PageHeader { eyebrow: t!("nav-interface"), title: t!("interfaces-title"), subtitle: t!("interfaces-subtitle") }
@@ -29,7 +39,7 @@ pub fn Interfaces() -> Element {
             Alert { variant: AlertVariant::Danger, class: "mb-4", "{e}" }
         }
 
-        CreateInterface { on_change: move |_| { refresh += 1; }, on_error: move |e: String| error.set(Some(e)) }
+        CreateInterface { groups: group_opts.clone(), on_change: move |_| { refresh += 1; }, on_error: move |e: String| error.set(Some(e)) }
 
         match &*ifaces.read() {
             Some(Ok(list)) if list.is_empty() => rsx! { p { class: "text-fg-muted text-sm mt-6", {t!("interfaces-empty")} } },
@@ -39,6 +49,7 @@ pub fn Interfaces() -> Element {
                         InterfaceCard {
                             key: "{iface.id}",
                             iface: iface.clone(),
+                            groups: group_opts.clone(),
                             on_change: move |_| { refresh += 1; },
                             on_error: move |e: String| error.set(Some(e)),
                         }
@@ -47,6 +58,34 @@ pub fn Interfaces() -> Element {
             },
             Some(Err(e)) => rsx! { Alert { variant: AlertVariant::Danger, "{e}" } },
             None => rsx! { p { class: "text-fg-muted", {t!("common-loading")} } },
+        }
+    }
+}
+
+/// Checkbox list of groups bound to a set of selected ids. Empty = nobody.
+#[component]
+fn GroupSelect(groups: Vec<(Uuid, String)>, selected: Signal<Vec<Uuid>>) -> Element {
+    rsx! {
+        div { class: "flex flex-col gap-1",
+            if groups.is_empty() {
+                p { class: "text-fg-faint text-xs", {t!("if-no-groups")} }
+            }
+            for (gid, gname) in groups {
+                label { key: "{gid}", class: "flex items-center gap-2 text-sm text-fg",
+                    input {
+                        r#type: "checkbox",
+                        checked: selected().contains(&gid),
+                        onchange: move |e| {
+                            let on = e.value() == "true";
+                            selected.with_mut(|s| {
+                                if on { if !s.contains(&gid) { s.push(gid); } }
+                                else { s.retain(|x| *x != gid); }
+                            });
+                        },
+                    }
+                    "{gname}"
+                }
+            }
         }
     }
 }
@@ -100,7 +139,7 @@ fn BackendFields(
 }
 
 #[component]
-fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
+fn CreateInterface(groups: Vec<(Uuid, String)>, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
     // Collapsed by default — the form is long, and creating interfaces is rare
     // relative to viewing them.
     let mut expanded = use_signal(|| false);
@@ -113,7 +152,7 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
     let mut allowed_ips = use_signal(|| "10.8.0.0/24, fd00:8::/64".to_string());
     let mut keepalive = use_signal(|| "25".to_string());
     let mut device_limit = use_signal(String::new);
-    let mut patterns = use_signal(|| vec!["*".to_string()]);
+    let mut sel_groups = use_signal(Vec::<Uuid>::new);
     let mut kind = use_signal(|| "self-managed".to_string());
     let mut mk_url = use_signal(String::new);
     let mut mk_user = use_signal(String::new);
@@ -133,7 +172,7 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
             allowed_ips(),
             keepalive().trim().parse().unwrap_or(25),
             device_limit().trim().parse::<i32>().ok(),
-            patterns(),
+            sel_groups(),
             kind(),
             mk_url(),
             mk_user(),
@@ -155,7 +194,7 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
                 allowed_ips.set("10.8.0.0/24, fd00:8::/64".to_string());
                 keepalive.set("25".to_string());
                 device_limit.set(String::new());
-                patterns.set(vec!["*".to_string()]);
+                sel_groups.set(Vec::new());
                 kind.set("self-managed".to_string());
                 mk_url.set(String::new());
                 mk_user.set(String::new());
@@ -193,8 +232,8 @@ fn CreateInterface(on_change: EventHandler<()>, on_error: EventHandler<String>) 
                         Field { label: t!("if-field-device-limit"), value: device_limit, placeholder: "5".to_string() }
                     }
                     div { class: "mt-3",
-                        label { class: "label text-sm text-fg-muted", {t!("if-field-patterns")} }
-                        PatternsEditor { patterns }
+                        label { class: "label text-sm text-fg-muted", {t!("if-field-groups")} }
+                        GroupSelect { groups: groups.clone(), selected: sel_groups }
                     }
                     div { class: "mt-3",
                         BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, node_url, node_key, pass_placeholder: t!("if-field-mikrotik-password"), node_key_placeholder: t!("if-field-node-key") }
@@ -219,10 +258,10 @@ fn Field(label: String, value: Signal<String>, placeholder: String) -> Element {
     }
 }
 
-/// Row-based editor for access patterns: one input per pattern, plus add/remove.
-/// An empty list means "nobody" (blank rows are dropped server-side).
+/// Row-based editor for a string list (patterns / claim values): one input per
+/// row, plus add/remove. An empty list means "nobody" (blanks dropped server-side).
 #[component]
-fn PatternsEditor(patterns: Signal<Vec<String>>) -> Element {
+pub fn PatternsEditor(patterns: Signal<Vec<String>>) -> Element {
     rsx! {
         div { class: "flex flex-col gap-2",
             for (idx, val) in patterns().into_iter().enumerate() {
@@ -253,7 +292,7 @@ fn PatternsEditor(patterns: Signal<Vec<String>>) -> Element {
 }
 
 #[component]
-fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
+fn InterfaceCard(iface: InterfaceAdminView, groups: Vec<(Uuid, String)>, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
     let id = iface.id;
     let mut editing = use_signal(|| false);
     let mut display_name = use_signal(|| iface.display_name.clone());
@@ -262,7 +301,7 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
     let mut allowed_ips = use_signal(|| iface.allowed_ips.clone());
     let mut keepalive = use_signal(|| iface.keepalive.to_string());
     let mut device_limit = use_signal(|| iface.device_limit.map(|l| l.to_string()).unwrap_or_default());
-    let patterns = use_signal(|| iface.access_patterns.clone());
+    let sel_groups = use_signal(|| iface.group_ids.clone());
     let kind = use_signal(|| iface.backend_kind.clone());
     let mk_url = use_signal(|| iface.mikrotik_url.clone().unwrap_or_default());
     let mk_user = use_signal(|| iface.mikrotik_username.clone().unwrap_or_default());
@@ -280,7 +319,7 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
             allowed_ips(),
             keepalive().trim().parse().unwrap_or(25),
             device_limit().trim().parse::<i32>().ok(),
-            patterns(),
+            sel_groups(),
             kind(),
             mk_url(),
             mk_user(),
@@ -308,6 +347,16 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
                     }
                     div { class: "text-fg-muted text-xs", "{iface.backend_kind} · {iface.address} · {iface.endpoint}" }
                 }
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| async move {
+                        match admin_resync_interface(id).await {
+                            Ok(()) => on_change.call(()),
+                            Err(e) => on_error.call(e.to_string()),
+                        }
+                    },
+                    {t!("action-resync")}
+                }
                 Button { variant: ButtonVariant::Secondary, onclick: move |_| editing.toggle(),
                     { if editing() { t!("action-cancel") } else { t!("action-edit") } }
                 }
@@ -332,8 +381,16 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
             div { class: "text-fg-muted text-xs mt-2 font-mono break-all",
                 {t!("iface-public-key")} ": {iface.public_key}"
             }
-            if !iface.access_patterns.is_empty() {
-                div { class: "text-fg-muted text-xs mt-1", {t!("if-field-patterns")} ": {iface.access_patterns.join(\", \")}" }
+            {
+                let names: Vec<String> = iface.group_ids.iter()
+                    .filter_map(|gid| groups.iter().find(|(id, _)| id == gid).map(|(_, n)| n.clone()))
+                    .collect();
+                rsx! {
+                    div { class: "text-fg-muted text-xs mt-1",
+                        {t!("if-field-groups")} ": "
+                        { if names.is_empty() { t!("if-no-groups-assigned") } else { names.join(", ") } }
+                    }
+                }
             }
 
             if editing() {
@@ -347,8 +404,8 @@ fn InterfaceCard(iface: InterfaceAdminView, on_change: EventHandler<()>, on_erro
                         Field { label: t!("if-field-device-limit"), value: device_limit, placeholder: String::new() }
                     }
                     div {
-                        label { class: "label text-sm text-fg-muted", {t!("if-field-patterns")} }
-                        PatternsEditor { patterns }
+                        label { class: "label text-sm text-fg-muted", {t!("if-field-groups")} }
+                        GroupSelect { groups: groups.clone(), selected: sel_groups }
                     }
                     BackendFields { kind, mk_url, mk_user, mk_pass, mk_insecure, node_url, node_key, pass_placeholder: t!("if-field-mikrotik-password-keep"), node_key_placeholder: t!("if-field-node-key-keep"), lock_kind: true }
                     p { class: "text-fg-faint text-xs", {t!("if-immutable-note-edit")} }

@@ -12,15 +12,21 @@ is applied through a pluggable backend.
   interfaces entirely in the admin UI (`/interfaces`); nothing about interfaces
   lives in config. Each interface has its **own backend**, per-user device
   limit, and access policy.
-- **Pattern-based access** — each interface carries access patterns (globs like
-  `*@corp.com`, literal emails, or `*` for everyone). A user may use an
-  interface iff their email matches. Editing patterns re-syncs immediately, so
-  access is granted/revoked in real time (devices dropped from the backend).
+- **Group-based access** (`/groups`) — reusable **groups** carry email patterns
+  (globs like `*@corp.com`, literal emails, or `*` for everyone) **and** OIDC
+  claim values. Interfaces grant access by assigning groups; a user may use an
+  interface iff they belong to one of its groups. Editing a group/interface
+  re-syncs immediately, so access is granted/revoked in real time.
+- **OIDC groups + liveliness** — groups can be driven by an OIDC claim
+  (configurable claim path per provider, captured at login, unioned across
+  providers). A login also refreshes account *liveliness*; a user who doesn't
+  log in within the provider's TTL (default 30d) is deactivated until they do.
 - **Per-user devices** — each user generates device configs on any interface
-  they can access (show, copy, regenerate, delete), bounded by that interface's
-  device limit.
-- **Admin console** (`/admin`) — manage any user's devices, revoke VPN access,
-  ban (blocks login + drops devices), and delete users.
+  they can access (download, copy, QR, regenerate, rename own, delete), bounded
+  by that interface's device limit.
+- **Admin console** (`/admin`) — manage any user's devices (create, rename,
+  regenerate, delete), revoke VPN access, ban (blocks login + drops devices),
+  and delete users; a per-interface **re-sync** re-asserts backend state.
 - **Dual-stack** — IPv6 is always on (non-optional): interfaces are IPv4 + IPv6
   and every device gets an address in each subnet. Admins can also assign a
   device a whole routed subnet of any prefix (e.g. an IPv6 `/64`).

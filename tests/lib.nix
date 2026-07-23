@@ -21,6 +21,7 @@
 }:
 
 let
+  # group_ids is filled in at runtime (the test creates an "all" group first).
   interfaceJson = builtins.toJSON {
     name = "wg0";
     listen_port = 51820;
@@ -28,7 +29,6 @@ let
     endpoint = "vpn.example.com:51820";
     dns = "10.8.0.1, fd00:8::1";
     allowed_ips = "10.8.0.0/24, fd00:8::/64";
-    access_patterns = [ "*" ]; # open interface for the test
     inherit backend;
   };
 in
@@ -68,10 +68,21 @@ pkgs.testers.runNixOSTest {
     )
     auth = "-H 'Authorization: Bearer admintoken'"
 
-    # Create the interface (admin-managed) with this backend.
+    # Create an "all" group (matches everyone) and assign it to the interface —
+    # access is group-based now.
+    gid = machine.succeed(
+        "curl -sf -X POST " + auth + " -H 'content-type: application/json' "
+        "-d '{\"name\":\"all\",\"patterns\":[\"*\"]}' http://localhost:8080/api/v1/groups | jq -r .id"
+    ).strip()
+    assert len(gid) > 10, f"group create returned: {gid}"
+
+    # Create the interface (admin-managed) with this backend + the group.
+    machine.succeed(
+        f"jq --arg gid '{gid}' '. + {{group_ids: [$gid]}}' /etc/wg-vpng-test/interface.json > /tmp/iface.json"
+    )
     code = machine.succeed(
         "curl -s -o /tmp/ifresp -w '%{http_code}' -X POST " + auth + " -H 'content-type: application/json' "
-        "-d @/etc/wg-vpng-test/interface.json http://localhost:8080/api/v1/interfaces"
+        "-d @/tmp/iface.json http://localhost:8080/api/v1/interfaces"
     ).strip()
     if code != "200":
         print("interface create HTTP", code, "body:", machine.succeed("cat /tmp/ifresp"))

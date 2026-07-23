@@ -27,7 +27,24 @@ brand-title = WireGuard VPN
 brand-subtitle = Generator
 nav-devices = My devices
 nav-interface = Interface
+nav-groups = Groups
 nav-users = Users
+
+## ── Groups (admin) ──────────────────────────────────────────────
+groups-title = Groups
+groups-subtitle = Reusable access rules. A user belongs to a group if their email matches a pattern, or one of their OIDC claim groups is listed. Interfaces grant access by assigning groups.
+groups-empty = No groups yet.
+groups-create-heading = New group
+group-field-name = Name
+group-field-name-placeholder = e.g. engineering
+group-field-patterns = Email patterns
+group-field-claims = OIDC claim values
+group-claims-help = Values matched against a user's OIDC group claim (per-provider claim path). Captured at login.
+if-field-groups = Groups (access)
+if-no-groups = No groups yet — create one on the Groups page.
+if-no-groups-assigned = none
+action-resync = Re-sync
+action-rename = Rename
 
 ## ── My devices ──────────────────────────────────────────────────
 devices-title = My devices
@@ -47,6 +64,7 @@ users-empty = No users yet.
 badge-admin = admin
 badge-banned = banned
 badge-revoked = revoked
+badge-deactivated = inactive
 users-device-count = { $count } / { $limit } devices
 users-limit-label = Limit
 users-limit-placeholder = def

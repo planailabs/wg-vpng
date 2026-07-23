@@ -48,6 +48,7 @@ pub fn Layout() -> Element {
                         NavTab { to: Route::MyConfig {}, label: t!("nav-devices") }
                         if is_admin {
                             NavTab { to: Route::Interfaces {}, label: t!("nav-interface") }
+                            NavTab { to: Route::Groups {}, label: t!("nav-groups") }
                             NavTab { to: Route::Admin {}, label: t!("nav-users") }
                         }
                     }

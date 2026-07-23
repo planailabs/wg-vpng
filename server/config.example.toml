@@ -33,3 +33,10 @@ issuer = "https://accounts.google.com"
 client_id = "xxx.apps.googleusercontent.com"
 client_secret = "GOCSPX-xxx"
 allowed_domains = ["example.com"]
+# Optional: OIDC claim path holding the user's groups (e.g. "groups", "roles",
+# "cognito:groups"). Its values are captured at login and matched against a
+# group's `claim_values` (managed in the admin Groups page).
+# groups_claim = "groups"
+# Optional: days a login keeps the account "live" before it deactivates for
+# inactivity (default 30; omit or 0 to never deactivate).
+# liveliness_days = 30

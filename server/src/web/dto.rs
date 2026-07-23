@@ -22,6 +22,9 @@ pub struct PeerView {
     pub owner_email: Option<String>,
     /// False for an "unconfigured" device (no key yet — the user must generate).
     pub configured: bool,
+    /// Whether the end user created this device. Users may rename only their own
+    /// user-created devices; admins may rename any.
+    pub user_created: bool,
 }
 
 /// A freshly created/regenerated device plus its full config (with the private
@@ -61,7 +64,8 @@ pub struct InterfaceAdminView {
     pub allowed_ips: String,
     pub keepalive: i32,
     pub device_limit: Option<i32>,
-    pub access_patterns: Vec<String>,
+    /// Groups whose members may use this interface.
+    pub group_ids: Vec<Uuid>,
     pub backend_kind: String,
     pub mikrotik_url: Option<String>,
     pub mikrotik_username: Option<String>,
@@ -69,6 +73,17 @@ pub struct InterfaceAdminView {
     pub node_url: Option<String>,
     /// Populated when the last backend sync/status failed (surfaced in the UI).
     pub backend_error: Option<String>,
+}
+
+/// A group (reusable access rule set) for the admin console.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupView {
+    pub id: Uuid,
+    pub name: String,
+    /// Email globs / literal emails; `*` = everyone.
+    pub patterns: Vec<String>,
+    /// Values matched against a user's OIDC group claim.
+    pub claim_values: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,4 +95,6 @@ pub struct UserAdminView {
     pub banned: bool,
     pub access_revoked: bool,
     pub device_count: i64,
+    /// Liveliness lapsed (login TTL passed) — access suspended until re-login.
+    pub deactivated: bool,
 }

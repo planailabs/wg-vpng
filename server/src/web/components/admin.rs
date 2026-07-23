@@ -13,6 +13,7 @@ use crate::web::dto::UserAdminView;
 use crate::web::server_fns::{
     admin_create_device, admin_delete_user, admin_list_interfaces, admin_list_users,
     admin_set_banned, admin_set_revoked, admin_user_devices, delete_peer, regenerate_peer,
+    rename_device,
 };
 
 #[component]
@@ -88,6 +89,7 @@ fn UserCard(
                         if user.is_admin { Badge { variant: BadgeVariant::Info, {t!("badge-admin")} } }
                         if user.banned { Badge { variant: BadgeVariant::Warn, {t!("badge-banned")} } }
                         if user.access_revoked { Badge { variant: BadgeVariant::Warn, {t!("badge-revoked")} } }
+                        if user.deactivated { Badge { variant: BadgeVariant::Warn, {t!("badge-deactivated")} } }
                     }
                     div { class: "text-fg-muted text-xs mt-0.5",
                         {t!("users-device-count-simple", count: user.device_count)}
@@ -192,7 +194,7 @@ fn UserCard(
                                             div { class: "text-warn text-xs", {t!("device-unconfigured-note")} }
                                         }
                                     }
-                                    DeviceButtons { id: d.id, on_change: move |_| { local += 1; on_change.call(()); }, on_error }
+                                    DeviceButtons { id: d.id, name: d.name.clone(), on_change: move |_| { local += 1; on_change.call(()); }, on_error }
                                 }
                             }
                         }
@@ -206,9 +208,26 @@ fn UserCard(
 }
 
 #[component]
-fn DeviceButtons(id: Uuid, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
+fn DeviceButtons(id: Uuid, name: String, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
     let mut config = use_signal(|| Option::<(String, String)>::None);
+    let mut renaming = use_signal(|| false);
+    let mut new_name = use_signal(|| name.clone());
     rsx! {
+        if renaming() {
+            input { class: "input text-sm w-40", value: "{new_name}", oninput: move |e| new_name.set(e.value()) }
+            Button {
+                variant: ButtonVariant::Secondary,
+                onclick: move |_| async move {
+                    match rename_device(id, new_name()).await {
+                        Ok(()) => { renaming.set(false); on_change.call(()); }
+                        Err(e) => on_error.call(e.to_string()),
+                    }
+                },
+                {t!("action-save")}
+            }
+        } else {
+            Button { variant: ButtonVariant::Secondary, onclick: move |_| renaming.set(true), {t!("action-rename")} }
+        }
         Button {
             variant: ButtonVariant::Secondary,
             onclick: move |_| async move {
