@@ -38,6 +38,37 @@ tutorial-platform-linux = Linux
 tutorial-platform-windows = Windows
 tutorial-platform-android = Android
 
+# Shared steps
+tut-create = On the "My devices" page, pick the interface you want, type a name for this device (e.g. "laptop") and click Generate.
+tut-download = Your configuration appears. Click Download to save the .conf file (named after the interface and your device). Save it now — it can't be shown again.
+# Linux
+tut-linux-save = Save the file in your home directory, then open a terminal. If it was saved elsewhere, change into that directory with `cd` (e.g. `cd Downloads`). The commands below use the name of the file you downloaded (shown here as `wg0-laptop.conf`) — substitute yours. Below are two methods — pick one and follow it.
+tut-nm = NetworkManager
+tut-linux-nm-intro = If your distribution uses NetworkManager, import and activate the config with:
+tut-linux-nm-reboot = The connection is re-established automatically after a reboot.
+tut-tools = WireGuard tools
+tut-linux-tools-intro = If your network is not managed by NetworkManager, use wireguard-tools (install the `wireguard-tools` package for your distribution), then run:
+tut-linux-tools-reboot = After a reboot you may need to bring the connection up again with `sudo wg-quick up wg0-laptop`.
+# Windows
+tut-win-install = Now install the WireGuard software: download it from wireguard.com and choose the Windows version.
+tut-win-download-link = Download WireGuard for Windows
+tut-win-open-file = After downloading, open the file and accept the security prompt.
+tut-win-import = WireGuard should open automatically after installation. If not, just open the WireGuard app from the search. In the WireGuard window, choose "Import tunnel(s) from file".
+tut-win-select = Select the file and confirm with "Open".
+tut-win-edit = After importing, edit the connection.
+tut-win-killswitch = Disable the option "Block untunneled traffic (kill-switch)" and confirm.
+tut-win-activate = Then activate the tunnel.
+tut-win-done = The tunnel is now active. It reconnects automatically after a reboot.
+# Android
+tut-android-download = Your configuration appears. Download the .conf file — or, quicker on a phone, scan the QR code directly from the WireGuard app (see below).
+tut-android-install = Now install the WireGuard app from the Play Store.
+tut-android-download-link = Get WireGuard on Google Play
+tut-android-open = Open the app.
+tut-android-plus = Tap the plus button at the bottom right.
+tut-android-import = Choose "Import from file or archive".
+tut-android-pick = Pick Downloads, then the .conf file you downloaded.
+tut-android-activate = Activate the tunnel.
+
 ## ── Groups (admin) ──────────────────────────────────────────────
 groups-title = Groups
 groups-subtitle = Reusable access rules. A user belongs to a group if their email matches a pattern, or one of their OIDC claim groups is listed. Interfaces grant access by assigning groups.

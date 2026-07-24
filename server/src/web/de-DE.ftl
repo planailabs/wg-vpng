@@ -37,6 +37,37 @@ tutorial-platform-linux = Linux
 tutorial-platform-windows = Windows
 tutorial-platform-android = Android
 
+# Gemeinsame Schritte
+tut-create = Wähle auf der Seite "Meine Geräte" die gewünschte Schnittstelle, gib einen Namen für das Gerät ein (z. B. "laptop") und klicke auf "Erstellen".
+tut-download = Deine Konfiguration erscheint. Klicke auf "Herunterladen", um die .conf-Datei zu speichern (benannt nach Schnittstelle und Gerät). Jetzt speichern — sie wird nicht erneut angezeigt.
+# Linux
+tut-linux-save = Speichere die Datei am besten im Home-Verzeichnis und öffne ein Terminal. Liegt die Datei woanders, wechsle mit `cd` dorthin (z. B. `cd Downloads`). Die Befehle unten verwenden den Namen deiner heruntergeladenen Datei (hier `wg0-laptop.conf`) — ersetze ihn durch deinen. Unten findest du zwei Methoden — wähle eine und folge ihr.
+tut-nm = NetworkManager
+tut-linux-nm-intro = Falls deine Distribution NetworkManager verwendet, importiere und aktiviere die Konfiguration so:
+tut-linux-nm-reboot = Die Verbindung wird nach Neustarts automatisch wiederhergestellt.
+tut-tools = WireGuard Tools
+tut-linux-tools-intro = Verwaltet deine Distribution das Netzwerk nicht über NetworkManager, nutze wireguard-tools (installiere das Paket `wireguard-tools`), und führe dann aus:
+tut-linux-tools-reboot = Nach einem Neustart musst du die Verbindung eventuell erneut mit `sudo wg-quick up wg0-laptop` herstellen.
+# Windows
+tut-win-install = Installiere nun die WireGuard-Software: Lade sie von wireguard.com herunter und wähle die Windows-Version.
+tut-win-download-link = WireGuard für Windows herunterladen
+tut-win-open-file = Öffne die heruntergeladene Datei und bestätige die Sicherheitsmeldung.
+tut-win-import = WireGuard sollte sich nach der Installation automatisch öffnen. Falls nicht, öffne die App WireGuard über die Suche. Wähle im WireGuard-Fenster "Tunnel aus Datei importieren".
+tut-win-select = Wähle die Datei aus und bestätige mit "Öffnen".
+tut-win-edit = Bearbeite anschließend die Verbindung.
+tut-win-killswitch = Deaktiviere die Option "Verkehr außerhalb des Tunnels blockieren" und bestätige.
+tut-win-activate = Aktiviere danach den Tunnel.
+tut-win-done = Der Tunnel ist jetzt aktiv und wird nach einem Neustart automatisch neu gestartet.
+# Android
+tut-android-download = Deine Konfiguration erscheint. Lade die .conf-Datei herunter — oder scanne am Handy einfach den QR-Code direkt aus der WireGuard-App (siehe unten).
+tut-android-install = Installiere nun die WireGuard-App aus dem Play Store.
+tut-android-download-link = WireGuard bei Google Play holen
+tut-android-open = Öffne die App.
+tut-android-plus = Tippe unten rechts auf das Plus-Zeichen.
+tut-android-import = Wähle "Aus Datei oder Archiv importieren".
+tut-android-pick = Wähle Downloads und dann die heruntergeladene .conf-Datei.
+tut-android-activate = Aktiviere den Tunnel.
+
 ## ── Gruppen (Admin) ─────────────────────────────────────────────
 groups-title = Gruppen
 groups-subtitle = Wiederverwendbare Zugriffsregeln. Ein Benutzer gehört zu einer Gruppe, wenn seine E-Mail einem Muster entspricht oder eine seiner OIDC-Claim-Gruppen aufgeführt ist. Schnittstellen gewähren Zugriff durch Zuweisen von Gruppen.
