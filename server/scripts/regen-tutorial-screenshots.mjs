@@ -30,8 +30,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // Per-language button/label text (the app UI is translated, so we can't match
 // on English text once the language is German).
 const LANGS = {
-  en: { tag: 'en-US', generate: 'Generate', delete: 'Delete', panel: 'Scan the QR' },
-  de: { tag: 'de-DE', generate: 'Erstellen', delete: 'Löschen', panel: 'Scanne den QR' },
+  en: { tag: 'en-US', generate: 'Generate', delete: 'Delete', panel: 'Scan the QR', download: 'Download' },
+  de: { tag: 'de-DE', generate: 'Erstellen', delete: 'Löschen', panel: 'Scanne den QR', download: 'Herunterladen' },
 };
 const VIEWPORTS = {
   desktop: { width: 1280, height: 850, mobile: false },
@@ -92,25 +92,42 @@ async function shot(file) {
   console.log('wrote', file);
 }
 
-async function setLang(L) {
-  const hasGenerate = `!!([...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(L.generate)}))`;
-  if (await evalJS(hasGenerate)) return; // already this language
-  // The app restores the saved language from localStorage on startup, so set it
-  // and reload (the picker's onchange only fires on trusted events, which we
-  // can't synthesise reliably against a headless <select>).
-  await evalJS(`try{localStorage.setItem('lang','${L.tag}')}catch(e){}`);
-  await S('Page.reload', { ignoreCache: true });
-  await waitFor(`!!document.getElementById('lang-picker')`);
-  await waitFor(hasGenerate);
+// Numbered step markers (orange badges) overlaid on a target element before a
+// shot. `elExpr` is a JS expression evaluating to the element (or null → skip).
+async function mark(elExpr, label) {
+  return evalJS(`(()=>{const el=(${elExpr}); if(!el) return false;
+    const r=el.getBoundingClientRect();
+    const b=document.createElement('div'); b.className='__wgmark'; b.textContent=${JSON.stringify(String(label))};
+    Object.assign(b.style,{position:'fixed',left:(r.left-16)+'px',top:(r.top-16)+'px',width:'30px',height:'30px',
+      borderRadius:'9999px',background:'#e8552b',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',
+      font:'700 16px system-ui,sans-serif',boxShadow:'0 2px 8px rgba(0,0,0,.4)',zIndex:'99999',pointerEvents:'none',border:'2px solid #fff'});
+    document.body.appendChild(b); return true;})()`);
+}
+const clearMarks = () => evalJS(`document.querySelectorAll('.__wgmark').forEach(e=>e.remove())`);
+const byText = (tag, txt) => `[...document.querySelectorAll('${tag}')].find(e=>e.textContent.trim()===${JSON.stringify(txt)})`;
+
+// Force the browser locale before loading so the app picks it up from
+// navigator.language on first render — no reload, no localStorage. We override
+// navigator.language via an init script (Emulation.setLocaleOverride doesn't
+// reliably change navigator.language in headless, and the host locale would
+// otherwise win).
+let langScriptId = null;
+async function useLang(L, V) {
+  if (langScriptId) {
+    await S('Page.removeScriptToEvaluateOnNewDocument', { identifier: langScriptId }).catch(() => {});
+  }
+  const src = `Object.defineProperty(navigator,'language',{get:()=>'${L.tag}',configurable:true});`
+    + `Object.defineProperty(navigator,'languages',{get:()=>['${L.tag}'],configurable:true});`;
+  langScriptId = (await S('Page.addScriptToEvaluateOnNewDocument', { source: src })).identifier;
+  await S('Emulation.setDeviceMetricsOverride', { ...V, deviceScaleFactor: 2, screenWidth: V.width, screenHeight: V.height });
 }
 
 async function capture(langKey, vpKey) {
   const L = LANGS[langKey], V = VIEWPORTS[vpKey];
-  await S('Emulation.setDeviceMetricsOverride', { ...V, deviceScaleFactor: 2, screenWidth: V.width, screenHeight: V.height });
+  await useLang(L, V);
   await S('Page.navigate', { url: APP });
-  await waitFor(`!!document.getElementById('lang-picker')`);
-  await setLang(L);
-  await sleep(500);
+  await waitFor(byText('button', L.generate));
+  await sleep(400);
 
   // Reset to a clean state: delete every existing device.
   while (await clickByText(L.delete)) await sleep(400);
@@ -122,7 +139,13 @@ async function capture(langKey, vpKey) {
   await waitFor(`document.querySelector('input')?.value==='laptop'`);
   await sleep(200);
   await evalJS('window.scrollTo(0,0)');
+  // Markers: ① name the device, ② generate.
+  await clearMarks();
+  await mark(`document.querySelector('input')`, '1');
+  await mark(byText('button', L.generate), '2');
+  await sleep(150);
   await shot(`app-create-${vpKey}-${langKey}.png`);
+  await clearMarks();
 
   // Generate one device → the config panel appears.
   await clickByText(L.generate);
@@ -130,13 +153,43 @@ async function capture(langKey, vpKey) {
   await sleep(600);
   await evalJS(`(document.querySelector('svg')?.closest('.border-brand-soft')||document.querySelector('pre'))?.scrollIntoView({block:'center'})`);
   await sleep(300);
+  // Marker: ① download the config.
+  await clearMarks();
+  await mark(byText('button', L.download), '1');
+  await sleep(150);
   await shot(`app-config-${vpKey}-${langKey}.png`);
+  await clearMarks();
+}
+
+// The live WireGuard install page (desktop), per language, with a marker on the
+// Windows download. Best-effort — needs internet; skipped on failure.
+async function captureWgInstall(langKey) {
+  const L = LANGS[langKey];
+  await useLang(L, VIEWPORTS.desktop);
+  try {
+    await S('Page.navigate', { url: 'https://www.wireguard.com/install/' });
+    await waitFor(`document.readyState==='complete' && document.querySelectorAll('a').length>3`, 15000);
+    await sleep(800);
+    await evalJS('window.scrollTo(0,0)');
+    await clearMarks();
+    // Prefer the "Download Windows Installer" button; fall back to any Windows link.
+    await mark(`[...document.querySelectorAll('a')].find(a=>/download.*windows/i.test(a.textContent))||[...document.querySelectorAll('a')].find(a=>/windows/i.test(a.textContent))`, '1');
+    await sleep(150);
+    await shot(`wg-install-desktop-${langKey}.png`);
+    await clearMarks();
+    return true;
+  } catch (e) {
+    console.log(`  wireguard.com capture (${langKey}) failed — offline?`, e.message);
+    return false;
+  }
 }
 
 try {
   for (const lang of ['en', 'de'])
     for (const vp of ['desktop', 'mobile'])
       await capture(lang, vp);
+  for (const lang of ['en', 'de'])
+    await captureWgInstall(lang);
   console.log('done');
 } finally {
   await send('Target.closeTarget', { targetId }).catch(() => {});

@@ -43,13 +43,17 @@ pub fn App() -> Element {
     });
     let css_href = format!("/tailwind.css?v={}", env!("BUILD_TIMESTAMP"));
 
-    // Restore language preference from localStorage.
+    // Pick the initial language: an explicit choice in localStorage wins;
+    // otherwise fall back to the browser's locale (navigator.language). Any
+    // `de*` tag selects German; everything else keeps the en-US default.
     use_effect(move || {
         spawn(async move {
-            let result =
-                document::eval("try { return localStorage.getItem('lang') || ''; } catch(e) { return ''; }").await;
+            let result = document::eval(
+                "try { return localStorage.getItem('lang') || navigator.language || ''; } catch(e) { return ''; }",
+            )
+            .await;
             if let Ok(val) = result {
-                if val.as_str() == Some("de-DE") {
+                if val.as_str().is_some_and(|s| s.starts_with("de")) {
                     let _ = i18n.set_language(langid!("de-DE"));
                 }
             }

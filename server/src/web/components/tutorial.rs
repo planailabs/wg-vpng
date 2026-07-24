@@ -156,7 +156,7 @@ fn windows() -> Vec<Block> {
         Block::AppImg("app-config-desktop"),
         Block::Text("tut-win-install"),
         Block::Link { key: "tut-win-download-link", href: "https://www.wireguard.com/install/" },
-        Block::Img("win-wireguard-com.png"),
+        Block::AppImg("wg-install-desktop"),
         Block::Text("tut-win-open-file"),
         Block::Img("win-wireguard-com-dl2.png"),
         Block::Img("win-wireguard-smartscreen.png"),

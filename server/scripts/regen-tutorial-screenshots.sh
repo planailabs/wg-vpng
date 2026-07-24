@@ -21,13 +21,25 @@ SOCK="$TMP/sock"; PGDATA="$TMP/pg"
 mkdir -p "$SOCK"
 
 srv_pid=""
+restart_overmind=""
 cleanup() {
   [ -n "$srv_pid" ] && sudo kill "$srv_pid" 2>/dev/null || true
   sudo ip link del "$IFACE" 2>/dev/null || true
   pg_ctl -D "$PGDATA" -m immediate stop >/dev/null 2>&1 || true
+  [ -n "$restart_overmind" ] && OVERMIND_SOCKET="$OVERMIND_SOCK" overmind restart server 2>/dev/null || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
+
+# A debug build (needed for DEV_ONLY_NO_AUTH) carries dioxus's hot-reload client,
+# which reflects the live `dx serve` (overmind) rebuild state and would show a
+# "being rebuilt" overlay mid-capture. Pause that dev server for the run. The
+# overmind socket lives in the repo root (one up from server/).
+OVERMIND_SOCK="$(cd .. && pwd)/.overmind.sock"
+if [ -S "$OVERMIND_SOCK" ]; then
+  echo "==> pausing the live dev server (overmind) during capture"
+  OVERMIND_SOCKET="$OVERMIND_SOCK" overmind stop server 2>/dev/null && restart_overmind=1 || true
+fi
 
 echo "==> ephemeral postgres"
 initdb -D "$PGDATA" -U postgres --auth=trust >/dev/null
@@ -43,10 +55,11 @@ url = "$DBURL"
 port = $APP_PORT
 EOF
 
-echo "==> building an isolated app bundle (dx build, not serve)"
-# A dedicated target dir keeps this off the live `dx serve` bundle (which carries
-# the hot-reload dev client and is rebuilt out from under us). `dx build` omits
-# that dev client. Slow the first time, cached after.
+echo "==> building an isolated debug app bundle"
+# Debug (not release) so DEV_ONLY_NO_AUTH works — release strips that path. A
+# dedicated target dir keeps it off the live dx-serve bundle; overmind is paused
+# above so its rebuilds don't pollute the hot-reload client. Slow the first
+# time, cached after.
 export CARGO_TARGET_DIR="${SHOTS_TARGET_DIR:-/tmp/wg-vpng-shots}"
 dx build --fullstack --package wg-vpng-server
 WEB="$CARGO_TARGET_DIR/dx/wg-vpng-server/debug/web"
