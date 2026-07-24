@@ -54,7 +54,12 @@ WEB="$CARGO_TARGET_DIR/dx/wg-vpng-server/debug/web"
 echo "    using $WEB"
 
 echo "==> starting app on :$APP_PORT (root, for the self-managed backend)"
+# Impersonate a realistic, non-admin end user so the screenshots show the
+# member's view (no admin tabs) with a proper name/email instead of "Dev".
 sudo -E env CONFIG_PATH="$TMP/config.toml" PORT="$APP_PORT" DEV_ONLY_NO_AUTH=1 \
+  DEV_USER_NAME="${DEV_USER_NAME:-Alex Müller}" \
+  DEV_USER_EMAIL="${DEV_USER_EMAIL:-alex@plan.ai}" \
+  DEV_USER_ADMIN=0 \
   "$WEB/server" >"$TMP/server.log" 2>&1 &
 srv_pid=$!
 for _ in $(seq 1 60); do

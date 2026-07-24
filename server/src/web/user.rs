@@ -24,12 +24,19 @@ pub async fn current_user() -> Result<WebUser, ServerFnError> {
     }
 }
 
+/// The synthetic dev-mode user. Email/name/admin are overridable via
+/// `DEV_USER_EMAIL` / `DEV_USER_NAME` / `DEV_USER_ADMIN` (e.g. to impersonate a
+/// realistic non-admin user for screenshots). Debug + DEV_ONLY_NO_AUTH only.
 fn dev_user() -> WebUser {
+    let email = std::env::var("DEV_USER_EMAIL").unwrap_or_else(|_| "dev@localhost".into());
+    let name = std::env::var("DEV_USER_NAME").unwrap_or_else(|_| "Dev".into());
+    // Admin by default (so the dev UI is fully usable); DEV_USER_ADMIN=0 opts out.
+    let is_admin = std::env::var("DEV_USER_ADMIN").as_deref() != Ok("0");
     WebUser {
         id: uuid::Uuid::nil(),
-        email: "dev@localhost".into(),
-        name: "Dev".into(),
-        is_admin: true,
+        email,
+        name,
+        is_admin,
         org_memberships: vec![],
         impersonating_from: None,
     }
