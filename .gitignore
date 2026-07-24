@@ -8,3 +8,4 @@ server/public/tailwind.css
 node_modules
 server/node_modules
 .dx
+/vue

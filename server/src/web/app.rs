@@ -9,12 +9,15 @@ use super::components::groups::Groups;
 use super::components::interfaces::Interfaces;
 use super::components::layout::Layout;
 use super::components::my_config::MyConfig;
+use super::components::tutorial::Tutorial;
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 pub enum Route {
     #[layout(Layout)]
     #[route("/")]
     MyConfig {},
+    #[route("/tutorial")]
+    Tutorial {},
     #[route("/interfaces")]
     Interfaces {},
     #[route("/groups")]

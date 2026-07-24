@@ -29,6 +29,14 @@ nav-devices = My devices
 nav-interface = Interface
 nav-groups = Groups
 nav-users = Users
+nav-tutorial = Setup guide
+
+## ── Setup guide ─────────────────────────────────────────────────
+tutorial-title = Set up your VPN
+tutorial-subtitle = Pick your operating system and follow the steps to connect a device.
+tutorial-platform-linux = Linux
+tutorial-platform-windows = Windows
+tutorial-platform-android = Android
 
 ## ── Groups (admin) ──────────────────────────────────────────────
 groups-title = Groups

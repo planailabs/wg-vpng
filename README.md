@@ -21,6 +21,9 @@ is applied through a pluggable backend.
   (configurable claim path per provider, captured at login, unioned across
   providers). A login also refreshes account *liveliness*; a user who doesn't
   log in within the provider's TTL (default 30d) is deactivated until they do.
+- **Setup guide** (`/tutorial`) — a built-in, multi-language, per-platform
+  (Linux / Windows / Android) walkthrough with screenshots for importing a
+  generated config into the WireGuard client.
 - **Per-user devices** — each user generates device configs on any interface
   they can access (download, copy, QR, regenerate, rename own, delete), bounded
   by that interface's device limit.

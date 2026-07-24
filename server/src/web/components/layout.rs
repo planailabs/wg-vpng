@@ -46,6 +46,7 @@ pub fn Layout() -> Element {
                     // Primary navigation (tabs)
                     nav { class: "flex items-stretch gap-1 h-full",
                         NavTab { to: Route::MyConfig {}, label: t!("nav-devices") }
+                        NavTab { to: Route::Tutorial {}, label: t!("nav-tutorial") }
                         if is_admin {
                             NavTab { to: Route::Interfaces {}, label: t!("nav-interface") }
                             NavTab { to: Route::Groups {}, label: t!("nav-groups") }

@@ -28,6 +28,14 @@ nav-devices = Meine Geräte
 nav-interface = Schnittstelle
 nav-groups = Gruppen
 nav-users = Benutzer
+nav-tutorial = Anleitung
+
+## ── Anleitung ───────────────────────────────────────────────────
+tutorial-title = VPN einrichten
+tutorial-subtitle = Wähle dein Betriebssystem und folge den Schritten, um ein Gerät zu verbinden.
+tutorial-platform-linux = Linux
+tutorial-platform-windows = Windows
+tutorial-platform-android = Android
 
 ## ── Gruppen (Admin) ─────────────────────────────────────────────
 groups-title = Gruppen
