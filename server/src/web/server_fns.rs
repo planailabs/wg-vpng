@@ -51,6 +51,11 @@ pub async fn create_my_device(interface_id: Uuid, name: String) -> Result<NewDev
     let user = crate::web::user::current_user().await?;
     let uid = crate::web::user::current_user_id(&pool, &user).await?;
 
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err(ServerFnError::new("a device name is required"));
+    }
+
     let iface = crate::store::get_interface(&pool, interface_id)
         .await
         .map_err(err)?
@@ -70,7 +75,8 @@ pub async fn create_my_device(interface_id: Uuid, name: String) -> Result<NewDev
     sync(&pool, interface_id).await?;
     let config = crate::store::render_peer_config(&iface, &peer, &private_key);
     let qr_svg = crate::store::config_qr_svg(&config);
-    Ok(NewDeviceView { peer: peer_view(&pool, peer, Some(user.email)).await?, config, qr_svg })
+    let filename = crate::store::download_filename(&iface, &peer.name);
+    Ok(NewDeviceView { peer: peer_view(&pool, peer, Some(user.email)).await?, config, qr_svg, filename })
 }
 
 #[server]
@@ -85,7 +91,8 @@ pub async fn regenerate_peer(id: Uuid) -> Result<NewDeviceView, ServerFnError> {
         .ok_or_else(|| ServerFnError::new("interface not found"))?;
     let config = crate::store::render_peer_config(&iface, &peer, &private_key);
     let qr_svg = crate::store::config_qr_svg(&config);
-    Ok(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config, qr_svg })
+    let filename = crate::store::download_filename(&iface, &peer.name);
+    Ok(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config, qr_svg, filename })
 }
 
 #[server]
@@ -126,6 +133,7 @@ pub async fn admin_list_interfaces() -> Result<Vec<InterfaceAdminView>, ServerFn
 pub async fn admin_create_interface(
     name: String,
     display_name: String,
+    download_filename: String,
     listen_port: i32,
     address: String,
     endpoint: String,
@@ -149,6 +157,7 @@ pub async fn admin_create_interface(
         &pool,
         &name,
         &display_name,
+        opt(&download_filename),
         listen_port,
         &address,
         &endpoint,
@@ -170,6 +179,7 @@ pub async fn admin_create_interface(
 pub async fn admin_update_interface(
     id: Uuid,
     display_name: String,
+    download_filename: String,
     endpoint: String,
     dns: String,
     allowed_ips: String,
@@ -193,6 +203,7 @@ pub async fn admin_update_interface(
         &pool,
         id,
         Some(&display_name),
+        Some(opt(&download_filename)),
         Some(&endpoint),
         Some(opt(&dns)),
         Some(&allowed_ips),
@@ -336,6 +347,10 @@ pub async fn admin_create_device(
 ) -> Result<Option<NewDeviceView>, ServerFnError> {
     let pool = crate::server_state::pool()?;
     require_admin(&pool).await?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err(ServerFnError::new("a device name is required"));
+    }
     let addr = address.trim();
     let addr_opt = if addr.is_empty() { None } else { Some(addr) };
 
@@ -358,7 +373,8 @@ pub async fn admin_create_device(
         .ok_or_else(|| ServerFnError::new("interface not found"))?;
     let config = crate::store::render_peer_config(&iface, &peer, &private_key);
     let qr_svg = crate::store::config_qr_svg(&config);
-    Ok(Some(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config, qr_svg }))
+    let filename = crate::store::download_filename(&iface, &peer.name);
+    Ok(Some(NewDeviceView { peer: peer_view(&pool, peer, None).await?, config, qr_svg, filename }))
 }
 
 #[server]
@@ -448,6 +464,7 @@ fn iface_admin_view(i: &crate::store::Interface) -> InterfaceAdminView {
         id: i.id,
         name: i.name.clone(),
         display_name: i.display_name.clone(),
+        download_filename: i.download_filename.clone().unwrap_or_default(),
         listen_port: i.listen_port,
         address: i.address.clone(),
         public_key: i.public_key.clone(),

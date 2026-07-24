@@ -145,6 +145,7 @@ fn CreateInterface(groups: Vec<(Uuid, String)>, on_change: EventHandler<()>, on_
     let mut expanded = use_signal(|| false);
     let mut name = use_signal(|| "wg0".to_string());
     let mut display_name = use_signal(String::new);
+    let mut download_filename = use_signal(String::new);
     let mut listen_port = use_signal(|| "51820".to_string());
     let mut address = use_signal(|| "10.8.0.1/24, fd00:8::1/64".to_string());
     let mut endpoint = use_signal(String::new);
@@ -165,6 +166,7 @@ fn CreateInterface(groups: Vec<(Uuid, String)>, on_change: EventHandler<()>, on_
         match admin_create_interface(
             name(),
             display_name(),
+            download_filename(),
             listen_port().trim().parse().unwrap_or(51820),
             address(),
             endpoint(),
@@ -187,6 +189,7 @@ fn CreateInterface(groups: Vec<(Uuid, String)>, on_change: EventHandler<()>, on_
                 // Reset to defaults and collapse so the next create starts fresh.
                 name.set("wg0".to_string());
                 display_name.set(String::new());
+                download_filename.set(String::new());
                 listen_port.set("51820".to_string());
                 address.set("10.8.0.1/24, fd00:8::1/64".to_string());
                 endpoint.set(String::new());
@@ -223,6 +226,7 @@ fn CreateInterface(groups: Vec<(Uuid, String)>, on_change: EventHandler<()>, on_
                     div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
                         Field { label: t!("if-field-name"), value: name, placeholder: "wg0".to_string() }
                         Field { label: t!("if-field-display-name"), value: display_name, placeholder: t!("if-field-display-name-placeholder") }
+                        Field { label: t!("if-field-download-filename"), value: download_filename, placeholder: name() }
                         Field { label: t!("if-field-listen-port"), value: listen_port, placeholder: "51820".to_string() }
                         Field { label: t!("if-field-address"), value: address, placeholder: "10.8.0.1/24, fd00::1/64".to_string() }
                         Field { label: t!("if-field-endpoint"), value: endpoint, placeholder: "vpn.example.com:51820".to_string() }
@@ -296,6 +300,7 @@ fn InterfaceCard(iface: InterfaceAdminView, groups: Vec<(Uuid, String)>, on_chan
     let id = iface.id;
     let mut editing = use_signal(|| false);
     let mut display_name = use_signal(|| iface.display_name.clone());
+    let mut download_filename = use_signal(|| iface.download_filename.clone());
     let mut endpoint = use_signal(|| iface.endpoint.clone());
     let mut dns = use_signal(|| iface.dns.clone().unwrap_or_default());
     let mut allowed_ips = use_signal(|| iface.allowed_ips.clone());
@@ -314,6 +319,7 @@ fn InterfaceCard(iface: InterfaceAdminView, groups: Vec<(Uuid, String)>, on_chan
         match admin_update_interface(
             id,
             display_name(),
+            download_filename(),
             endpoint(),
             dns(),
             allowed_ips(),
@@ -397,6 +403,7 @@ fn InterfaceCard(iface: InterfaceAdminView, groups: Vec<(Uuid, String)>, on_chan
                 div { class: "mt-4 border-t border-line-soft pt-3 flex flex-col gap-3",
                     div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
                         Field { label: t!("if-field-display-name"), value: display_name, placeholder: t!("if-field-display-name-placeholder") }
+                        Field { label: t!("if-field-download-filename"), value: download_filename, placeholder: iface.name.clone() }
                         Field { label: t!("if-field-endpoint"), value: endpoint, placeholder: String::new() }
                         Field { label: t!("if-field-dns"), value: dns, placeholder: String::new() }
                         Field { label: t!("if-field-allowed-ips"), value: allowed_ips, placeholder: String::new() }

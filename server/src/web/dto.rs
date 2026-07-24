@@ -35,6 +35,8 @@ pub struct NewDeviceView {
     pub config: String,
     /// Scannable QR (SVG) of the config for the WireGuard mobile app.
     pub qr_svg: String,
+    /// Suggested download filename: `<interface download name>-<device>.conf`.
+    pub filename: String,
 }
 
 /// An interface a user can access, with their usage on it.
@@ -56,6 +58,8 @@ pub struct InterfaceAdminView {
     pub id: Uuid,
     pub name: String,
     pub display_name: String,
+    /// Base name for downloaded configs; empty falls back to `name`.
+    pub download_filename: String,
     pub listen_port: i32,
     pub address: String,
     pub public_key: String,

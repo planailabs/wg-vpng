@@ -24,6 +24,9 @@ pub struct Interface {
     pub name: String,
     /// Human-friendly label; empty falls back to `name` in the UI.
     pub display_name: String,
+    /// Base name for downloaded device configs; empty falls back to `name`.
+    /// The downloaded file is `<download_filename>-<device name>.conf`.
+    pub download_filename: Option<String>,
     pub listen_port: i32,
     pub address: String,
     #[serde(skip_serializing)]
@@ -89,7 +92,7 @@ pub struct User {
     pub access_revoked: bool,
 }
 
-const IFACE_COLS: &str = "id, name, display_name, listen_port, address, private_key, public_key, endpoint, \
+const IFACE_COLS: &str = "id, name, display_name, download_filename, listen_port, address, private_key, public_key, endpoint, \
     dns, allowed_ips, keepalive, device_limit, group_ids, backend, last_error";
 const GROUP_COLS: &str = "id, name, patterns, claim_values";
 const PEER_COLS: &str = "id, interface_id, user_id, name, public_key, preshared_key, address, user_created";
@@ -279,6 +282,7 @@ pub async fn create_interface(
     pool: &PgPool,
     name: &str,
     display_name: &str,
+    download_filename: Option<&str>,
     listen_port: i32,
     address: &str,
     endpoint: &str,
@@ -295,12 +299,13 @@ pub async fn create_interface(
     let kp = wg::generate_keypair();
     let iface = sqlx::query_as::<_, Interface>(&format!(
         "INSERT INTO wg_interfaces \
-         (name, display_name, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, \
+         (name, display_name, download_filename, listen_port, address, private_key, public_key, endpoint, dns, allowed_ips, \
           keepalive, device_limit, group_ids, backend) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING {IFACE_COLS}"
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING {IFACE_COLS}"
     ))
     .bind(name)
     .bind(display_name)
+    .bind(download_filename.map(str::trim).filter(|s| !s.is_empty()))
     .bind(listen_port)
     .bind(&address)
     .bind(&kp.private_key)
@@ -378,6 +383,7 @@ pub async fn update_interface(
     pool: &PgPool,
     id: Uuid,
     display_name: Option<&str>,
+    download_filename: Option<Option<&str>>,
     endpoint: Option<&str>,
     dns: Option<Option<&str>>,
     allowed_ips: Option<&str>,
@@ -391,6 +397,10 @@ pub async fn update_interface(
     // (e.g. MikroTik URL/username/password) may be updated in place.
     let cur = get_interface(pool, id).await?.context("interface not found")?;
     let new_display = display_name.map(str::to_string).unwrap_or(cur.display_name);
+    let new_download = match download_filename {
+        Some(v) => v.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+        None => cur.download_filename,
+    };
     let new_endpoint = endpoint.map(str::to_string).unwrap_or(cur.endpoint);
     let new_dns = match dns {
         Some(d) => d.map(str::to_string),
@@ -430,11 +440,12 @@ pub async fn update_interface(
     };
 
     let iface = sqlx::query_as::<_, Interface>(&format!(
-        "UPDATE wg_interfaces SET display_name=$2, endpoint=$3, dns=$4, allowed_ips=$5, keepalive=$6, \
-         device_limit=$7, group_ids=$8, backend=$9 WHERE id=$1 RETURNING {IFACE_COLS}"
+        "UPDATE wg_interfaces SET display_name=$2, download_filename=$3, endpoint=$4, dns=$5, allowed_ips=$6, keepalive=$7, \
+         device_limit=$8, group_ids=$9, backend=$10 WHERE id=$1 RETURNING {IFACE_COLS}"
     ))
     .bind(id)
     .bind(&new_display)
+    .bind(&new_download)
     .bind(&new_endpoint)
     .bind(&new_dns)
     .bind(&new_allowed)
@@ -843,6 +854,37 @@ pub async fn sync_all_best_effort(pool: &PgPool) {
 pub const PRIVATE_KEY_PLACEHOLDER: &str =
     "<not stored — regenerate this device to get a new key>";
 
+/// The `.conf` filename offered on download: `<base>-<device>.conf`, where the
+/// base is the interface's `download_filename` (falling back to its `name`).
+/// Both parts are sanitised to filename-safe characters.
+pub fn download_filename(iface: &Interface, device_name: &str) -> String {
+    let base = iface
+        .download_filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&iface.name);
+    format!("{}-{}.conf", sanitize_filename(base), sanitize_filename(device_name))
+}
+
+/// Reduce an arbitrary label to a safe filename component (alphanumerics plus
+/// `-`/`_`/`.`; other runs collapse to a single `-`). Never empty.
+fn sanitize_filename(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_dash = false;
+    for c in s.trim().chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() { "device".to_string() } else { trimmed }
+}
+
 /// Render a scannable QR code (SVG) of a WireGuard client config. WireGuard's
 /// mobile apps import the whole `.conf` text from the QR, so we encode the
 /// config verbatim.
@@ -920,6 +962,7 @@ mod tests {
             pool,
             "wg0",
             "",
+            None,
             51820,
             addr,
             "vpn.example.com:51820",
@@ -1014,7 +1057,7 @@ mod tests {
         let a = mk_iface(&pool, &["*".into()], "10.8.0.1/24").await;
         // A second interface sharing the same "everyone" group.
         let gid = group_id_by_name(&pool, "acl").await;
-        let b = create_interface(&pool, "wg1", "", 51821, "10.9.0.1/24", "vpn:51821", None, "10.9.0.0/24", 25, Some(2), &[gid], BackendConfig::SelfManaged).await.unwrap();
+        let b = create_interface(&pool, "wg1", "", None, 51821, "10.9.0.1/24", "vpn:51821", None, "10.9.0.0/24", 25, Some(2), &[gid], BackendConfig::SelfManaged).await.unwrap();
 
         let u: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
             .fetch_one(&pool).await.unwrap();
@@ -1081,7 +1124,7 @@ mod tests {
 
         // Interface access via a claim-only group.
         let g = create_group(&pool, "eng", &[], &["engineering".into()]).await.unwrap();
-        let iface = create_interface(&pool, "wg0", "", 51820, "10.8.0.1/24, fd00:8::1/64",
+        let iface = create_interface(&pool, "wg0", "", None, 51820, "10.8.0.1/24, fd00:8::1/64",
             "vpn:51820", None, "10.8.0.0/24", 25, Some(5), &[g.id], BackendConfig::SelfManaged).await.unwrap();
 
         let u: Uuid = sqlx::query_scalar("INSERT INTO users (email) VALUES ('u@x') RETURNING id")
@@ -1130,6 +1173,31 @@ mod tests {
         record_login(&pool, u, Some(30)).await.unwrap();
         assert!(user_is_live(&pool, u).await.unwrap());
         assert_eq!(list_active_peers(&pool, iface.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn download_filename_defaults_to_name_and_sanitizes() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+        let g = create_group(&pool, "acl", &["*".into()], &[]).await.unwrap();
+
+        // No override -> base falls back to the interface name.
+        let a = create_interface(&pool, "wg0", "plan.ai", None, 51820, "10.8.0.1/24",
+            "vpn:51820", None, "10.8.0.0/24", 25, None, &[g.id], BackendConfig::SelfManaged).await.unwrap();
+        assert_eq!(download_filename(&a, "My Laptop"), "wg0-My-Laptop.conf");
+
+        // Explicit override is used and sanitised.
+        let b = create_interface(&pool, "wg1", "", Some("plan ai vpn"), 51821, "10.9.0.1/24",
+            "vpn:51821", None, "10.9.0.0/24", 25, None, &[g.id], BackendConfig::SelfManaged).await.unwrap();
+        assert_eq!(b.download_filename.as_deref(), Some("plan ai vpn"));
+        assert_eq!(download_filename(&b, "phone/2"), "plan-ai-vpn-phone-2.conf");
+
+        // Blank override is stored as NULL (falls back to name).
+        let c = create_interface(&pool, "wg2", "", Some("  "), 51822, "10.10.0.1/24",
+            "vpn:51822", None, "10.10.0.0/24", 25, None, &[g.id], BackendConfig::SelfManaged).await.unwrap();
+        assert_eq!(c.download_filename, None);
+        assert_eq!(download_filename(&c, "x"), "wg2-x.conf");
     }
 
     #[tokio::test]

@@ -100,6 +100,7 @@ interfaces-empty = Noch keine Schnittstellen.
 interfaces-backend-error = Backend-Fehler:
 if-field-name = Schnittstellen-ID (z. B. wg0)
 if-field-display-name = Anzeigename
+if-field-download-filename = Download-Dateiname
 if-field-display-name-placeholder = z. B. Büro-VPN
 if-field-listen-port = Listen-Port
 if-field-address = Server-Adresse(n)

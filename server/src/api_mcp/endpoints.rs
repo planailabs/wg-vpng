@@ -96,6 +96,8 @@ pub struct InterfaceOutput {
     pub name: String,
     /// Human-friendly label; empty falls back to `name`.
     pub display_name: String,
+    /// Base name for downloaded device configs; null/empty falls back to `name`.
+    pub download_filename: Option<String>,
     pub listen_port: i32,
     pub address: String,
     pub public_key: String,
@@ -123,6 +125,7 @@ fn iface_output(i: &store::Interface) -> InterfaceOutput {
         id: i.id,
         name: i.name.clone(),
         display_name: i.display_name.clone(),
+        download_filename: i.download_filename.clone(),
         listen_port: i.listen_port,
         address: i.address.clone(),
         public_key: i.public_key.clone(),
@@ -189,6 +192,9 @@ pub struct InterfaceCreateInput {
     /// Human-friendly label; empty falls back to `name`.
     #[serde(default)]
     pub display_name: String,
+    /// Base name for downloaded device configs; empty falls back to `name`.
+    #[serde(default)]
+    pub download_filename: String,
     #[serde(default = "default_listen_port")]
     pub listen_port: i32,
     /// Server tunnel address(es), comma-separated (dual-stack; IPv6 enforced).
@@ -221,6 +227,7 @@ pub async fn interface_create(
         &pool,
         &i.name,
         &i.display_name,
+        Some(i.download_filename.as_str()),
         i.listen_port,
         &i.address,
         &i.endpoint,
@@ -244,6 +251,9 @@ pub struct InterfaceUpdateInput {
     /// Human-friendly label; empty falls back to `name`.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Base name for downloaded device configs; empty string resets to `name`.
+    #[serde(default)]
+    pub download_filename: Option<String>,
     #[serde(default)]
     pub endpoint: Option<String>,
     /// Empty string clears DNS.
@@ -271,6 +281,8 @@ pub async fn interface_update(
     p.require_admin()?;
     let iface = resolve_interface(&pool, i.id).await?;
     let dns = i.dns.as_ref().map(|s| if s.is_empty() { None } else { Some(s.as_str()) });
+    // Some(Some(x)) sets, Some(None) resets to `name`; None leaves unchanged.
+    let download = i.download_filename.as_ref().map(|s| if s.is_empty() { None } else { Some(s.as_str()) });
     let backend = match i.backend {
         Some(b) => Some(b.build()?),
         None => None,
@@ -279,6 +291,7 @@ pub async fn interface_update(
         &pool,
         iface.id,
         i.display_name.as_deref(),
+        download,
         i.endpoint.as_deref(),
         dns,
         i.allowed_ips.as_deref(),

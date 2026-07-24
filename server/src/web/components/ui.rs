@@ -37,9 +37,10 @@ pub fn SectionCard(title: String, children: Element) -> Element {
 /// The freshly-generated config: QR (for the WireGuard mobile app), the config
 /// text, and Copy + Download. Shown once — the private key is not stored.
 #[component]
-pub fn ConfigPanel(config: String, qr_svg: String) -> Element {
+pub fn ConfigPanel(config: String, qr_svg: String, filename: String) -> Element {
     let copy_cfg = config.clone();
     let dl_cfg = config.clone();
+    let dl_name = if filename.is_empty() { "wireguard.conf".to_string() } else { filename };
     rsx! {
         Card { class: "mt-6 p-4 border-brand-soft",
             div { class: "flex flex-col sm:flex-row gap-4",
@@ -73,14 +74,16 @@ pub fn ConfigPanel(config: String, qr_svg: String) -> Element {
                             variant: ButtonVariant::Secondary,
                             onclick: move |_| {
                                 let c = dl_cfg.clone();
+                                let n = dl_name.clone();
                                 async move {
                                     // Trigger a .conf download via a Blob + anchor click.
                                     let js = format!(
                                         "(function(){{const b=new Blob([{}],{{type:'text/plain'}});\
                                           const u=URL.createObjectURL(b);const a=document.createElement('a');\
-                                          a.href=u;a.download='wireguard.conf';document.body.appendChild(a);\
+                                          a.href=u;a.download={};document.body.appendChild(a);\
                                           a.click();a.remove();URL.revokeObjectURL(u);}})();",
-                                        serde_json::to_string(&c).unwrap_or_default()
+                                        serde_json::to_string(&c).unwrap_or_default(),
+                                        serde_json::to_string(&n).unwrap_or_default()
                                     );
                                     let _ = document::eval(&js);
                                 }

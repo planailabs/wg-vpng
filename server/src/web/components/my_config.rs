@@ -24,7 +24,7 @@ pub fn MyConfig() -> Element {
     })?;
     let mut error = use_signal(|| Option::<String>::None);
     // (config, qr_svg) of the most recently generated device — shown once.
-    let mut shown = use_signal(|| Option::<(String, String)>::None);
+    let mut shown = use_signal(|| Option::<(String, String, String)>::None);
 
     let iface_list = match &*ifaces.read() {
         Some(Ok(l)) => l.clone(),
@@ -54,14 +54,14 @@ pub fn MyConfig() -> Element {
                     iface: iface.clone(),
                     devices: all_devices.iter().filter(|d| d.interface_id == iface.id).cloned().collect::<Vec<_>>(),
                     on_change: move |_| refresh.with_mut(|r| *r += 1),
-                    on_show: move |c: (String, String)| shown.set(Some(c)),
+                    on_show: move |c: (String, String, String)| shown.set(Some(c)),
                     on_error: move |e: String| error.set(Some(e)),
                 }
             }
         }
 
-        if let Some((config, qr_svg)) = shown() {
-            ConfigPanel { config, qr_svg }
+        if let Some((config, qr_svg, filename)) = shown() {
+            ConfigPanel { config, qr_svg, filename }
         }
     }
 }
@@ -71,7 +71,7 @@ fn InterfaceSection(
     iface: InterfaceAccessView,
     devices: Vec<PeerView>,
     on_change: EventHandler<()>,
-    on_show: EventHandler<(String, String)>,
+    on_show: EventHandler<(String, String, String)>,
     on_error: EventHandler<String>,
 ) -> Element {
     let iid = iface.id;
@@ -100,14 +100,14 @@ fn InterfaceSection(
                 }
                 Button {
                     variant: ButtonVariant::Primary,
-                    disabled: at_limit,
+                    disabled: at_limit || new_name().trim().is_empty(),
                     onclick: move |_| {
                         let name = new_name();
                         async move {
                             match create_my_device(iid, name).await {
                                 Ok(v) => {
                                     new_name.set(String::new());
-                                    on_show.call((v.config, v.qr_svg));
+                                    on_show.call((v.config, v.qr_svg, v.filename));
                                     on_change.call(());
                                 }
                                 Err(e) => on_error.call(e.to_string()),
@@ -132,7 +132,7 @@ fn InterfaceSection(
                             configured: peer.configured,
                             user_created: peer.user_created,
                             on_change: move |_| on_change.call(()),
-                            on_show: move |c: (String, String)| on_show.call(c),
+                            on_show: move |c: (String, String, String)| on_show.call(c),
                             on_error: move |e: String| on_error.call(e),
                         }
                     }
@@ -150,7 +150,7 @@ fn DeviceRow(
     configured: bool,
     user_created: bool,
     on_change: EventHandler<()>,
-    on_show: EventHandler<(String, String)>,
+    on_show: EventHandler<(String, String, String)>,
     on_error: EventHandler<String>,
 ) -> Element {
     let display_name = if name.is_empty() { t!("device-unnamed") } else { name.clone() };
@@ -201,7 +201,7 @@ fn DeviceRow(
                 variant: if configured { ButtonVariant::Secondary } else { ButtonVariant::Primary },
                 onclick: move |_| async move {
                     match regenerate_peer(id).await {
-                        Ok(v) => { on_show.call((v.config, v.qr_svg)); on_change.call(()); }
+                        Ok(v) => { on_show.call((v.config, v.qr_svg, v.filename)); on_change.call(()); }
                         Err(e) => on_error.call(e.to_string()),
                     }
                 },

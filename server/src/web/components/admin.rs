@@ -76,7 +76,7 @@ fn UserCard(
     let mut new_device = use_signal(String::new);
     let mut new_address = use_signal(String::new);
     let mut gen_key = use_signal(|| false);
-    let mut created_config = use_signal(|| Option::<(String, String)>::None);
+    let mut created_config = use_signal(|| Option::<(String, String, String)>::None);
     let mut sel_iface = use_signal(|| ifaces.first().map(|(id, _)| id.to_string()).unwrap_or_default());
 
     rsx! {
@@ -149,6 +149,7 @@ fn UserCard(
                         }
                         Button {
                             variant: ButtonVariant::Primary,
+                            disabled: new_device().trim().is_empty(),
                             onclick: move |_| {
                                 let (name, addr, g) = (new_device(), new_address(), gen_key());
                                 let iid = sel_iface();
@@ -158,7 +159,7 @@ fn UserCard(
                                         Ok(v) => {
                                             new_device.set(String::new());
                                             new_address.set(String::new());
-                                            if let Some(nd) = v { created_config.set(Some((nd.config, nd.qr_svg))); }
+                                            if let Some(nd) = v { created_config.set(Some((nd.config, nd.qr_svg, nd.filename))); }
                                             local += 1;
                                             on_change.call(());
                                         }
@@ -169,8 +170,8 @@ fn UserCard(
                             {t!("action-add-device")}
                         }
                     }
-                    if let Some((config, qr_svg)) = created_config() {
-                        ConfigPanel { config, qr_svg }
+                    if let Some((config, qr_svg, filename)) = created_config() {
+                        ConfigPanel { config, qr_svg, filename }
                     }
                 }
 
@@ -209,7 +210,7 @@ fn UserCard(
 
 #[component]
 fn DeviceButtons(id: Uuid, name: String, on_change: EventHandler<()>, on_error: EventHandler<String>) -> Element {
-    let mut config = use_signal(|| Option::<(String, String)>::None);
+    let mut config = use_signal(|| Option::<(String, String, String)>::None);
     let mut renaming = use_signal(|| false);
     let mut new_name = use_signal(|| name.clone());
     rsx! {
@@ -232,7 +233,7 @@ fn DeviceButtons(id: Uuid, name: String, on_change: EventHandler<()>, on_error: 
             variant: ButtonVariant::Secondary,
             onclick: move |_| async move {
                 match regenerate_peer(id).await {
-                    Ok(v) => { config.set(Some((v.config, v.qr_svg))); on_change.call(()); }
+                    Ok(v) => { config.set(Some((v.config, v.qr_svg, v.filename))); on_change.call(()); }
                     Err(e) => on_error.call(e.to_string()),
                 }
             },
@@ -248,9 +249,9 @@ fn DeviceButtons(id: Uuid, name: String, on_change: EventHandler<()>, on_error: 
             },
             {t!("action-delete")}
         }
-        if let Some((cfg, qr)) = config() {
+        if let Some((cfg, qr, fname)) = config() {
             div { class: "w-full",
-                ConfigPanel { config: cfg, qr_svg: qr }
+                ConfigPanel { config: cfg, qr_svg: qr, filename: fname }
             }
         }
     }

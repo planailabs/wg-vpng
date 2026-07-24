@@ -101,6 +101,7 @@ interfaces-empty = No interfaces yet.
 interfaces-backend-error = Backend error:
 if-field-name = Interface id (e.g. wg0)
 if-field-display-name = Display name
+if-field-download-filename = Download filename
 if-field-display-name-placeholder = e.g. Office VPN
 if-field-listen-port = Listen port
 if-field-address = Server address(es)
