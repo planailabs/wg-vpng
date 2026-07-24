@@ -854,9 +854,15 @@ pub async fn sync_all_best_effort(pool: &PgPool) {
 pub const PRIVATE_KEY_PLACEHOLDER: &str =
     "<not stored — regenerate this device to get a new key>";
 
+/// Longest valid WireGuard interface/tunnel name (`wg-quick` accepts
+/// `[a-zA-Z0-9_=+.-]{1,15}`). Importing a `.conf` uses its stem as the tunnel
+/// name, so the stem must fit — see [`fit_two`].
+const WG_NAME_MAX: usize = 15;
+
 /// The `.conf` filename offered on download: `<base>-<device>.conf`, where the
 /// base is the interface's `download_filename` (falling back to its `name`).
-/// Both parts are sanitised to filename-safe characters.
+/// Both parts are sanitised, and the stem is shortened to a valid WireGuard
+/// tunnel name (≤15 chars) since importers derive the interface name from it.
 pub fn download_filename(iface: &Interface, device_name: &str) -> String {
     let base = iface
         .download_filename
@@ -864,7 +870,36 @@ pub fn download_filename(iface: &Interface, device_name: &str) -> String {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(&iface.name);
-    format!("{}-{}.conf", sanitize_filename(base), sanitize_filename(device_name))
+    let stem = fit_two(&sanitize_filename(base), &sanitize_filename(device_name), WG_NAME_MAX);
+    format!("{stem}.conf")
+}
+
+/// Join `a` and `b` with `-` into at most `max` chars, splitting the budget
+/// fairly: each side gets an even share, and a side shorter than its share
+/// donates the slack to the other. Both parts are ASCII (post-sanitise), so
+/// byte slicing is char-safe; truncated parts are re-trimmed of separators.
+fn fit_two(a: &str, b: &str, max: usize) -> String {
+    if a.len() + 1 + b.len() <= max {
+        return format!("{a}-{b}");
+    }
+    let avail = max.saturating_sub(1); // reserve the '-'
+    let half = avail / 2;
+    let (alen, blen) = if a.len() <= half {
+        (a.len(), avail - a.len())
+    } else if b.len() <= avail - half {
+        (avail - b.len(), b.len())
+    } else {
+        (avail - half, half)
+    };
+    let trim = |s: &str| s.trim_matches(&['-', '_', '.'][..]).to_string();
+    let a = trim(&a[..alen.min(a.len())]);
+    let b = trim(&b[..blen.min(b.len())]);
+    match (a.is_empty(), b.is_empty()) {
+        (false, false) => format!("{a}-{b}"),
+        (false, true) => a,
+        (true, false) => b,
+        (true, true) => "device".to_string(),
+    }
 }
 
 /// Reduce an arbitrary label to a safe filename component (alphanumerics plus
@@ -1191,13 +1226,32 @@ mod tests {
         let b = create_interface(&pool, "wg1", "", Some("plan ai vpn"), 51821, "10.9.0.1/24",
             "vpn:51821", None, "10.9.0.0/24", 25, None, &[g.id], BackendConfig::SelfManaged).await.unwrap();
         assert_eq!(b.download_filename.as_deref(), Some("plan ai vpn"));
-        assert_eq!(download_filename(&b, "phone/2"), "plan-ai-vpn-phone-2.conf");
+        // Stem exceeds 15 -> both sides truncated to a valid tunnel name.
+        assert_eq!(download_filename(&b, "phone/2"), "plan-ai-phone-2.conf");
 
         // Blank override is stored as NULL (falls back to name).
         let c = create_interface(&pool, "wg2", "", Some("  "), 51822, "10.10.0.1/24",
             "vpn:51822", None, "10.10.0.0/24", 25, None, &[g.id], BackendConfig::SelfManaged).await.unwrap();
         assert_eq!(c.download_filename, None);
         assert_eq!(download_filename(&c, "x"), "wg2-x.conf");
+    }
+
+    #[test]
+    fn fit_two_produces_valid_wireguard_names() {
+        // Short enough -> untouched.
+        assert_eq!(fit_two("wg0", "laptop", 15), "wg0-laptop");
+        // A short side lets the long side keep more of its budget.
+        assert_eq!(fit_two("wg0", "my-really-long-device", 15), "wg0-my-really-l");
+        // Both long -> even split, no dangling separators.
+        assert_eq!(fit_two("plan-ai-office", "phone-number", 15), "plan-ai-phone-n");
+        for stem in [
+            fit_two("plan-ai", "phone-2", 15),
+            fit_two("wg0", "my-really-long-device", 15),
+            fit_two("plan-ai-office", "phone-number", 15),
+        ] {
+            assert!(stem.len() <= 15, "{stem} too long");
+            assert!(!stem.starts_with('-') && !stem.ends_with('-'), "{stem} dangling dash");
+        }
     }
 
     #[tokio::test]
