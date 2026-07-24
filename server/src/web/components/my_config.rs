@@ -85,36 +85,39 @@ fn InterfaceSection(
 
     rsx! {
         Card { class: "p-0 overflow-hidden",
-            div { class: "px-4 py-3 border-b border-line-soft bg-surface-2 flex items-center gap-3 flex-wrap",
+            div { class: "px-4 py-3 border-b border-line-soft bg-surface-2 flex flex-col sm:flex-row sm:items-center gap-3",
                 div { class: "flex-1 min-w-0",
-                    div { class: "text-fg-strong font-medium",
+                    div { class: "text-fg-strong font-medium truncate",
                         { if iface.display_name.is_empty() { iface.name.clone() } else { iface.display_name.clone() } }
                     }
-                    div { class: "text-fg-muted text-xs", "{iface.endpoint} · {quota}" }
+                    div { class: "text-fg-muted text-xs truncate", "{iface.endpoint} · {quota}" }
                 }
-                input {
-                    class: "input w-40 text-sm",
-                    placeholder: t!("devices-new-name-placeholder"),
-                    value: "{new_name}",
-                    oninput: move |e| new_name.set(e.value()),
-                }
-                Button {
-                    variant: ButtonVariant::Primary,
-                    disabled: at_limit || new_name().trim().is_empty(),
-                    onclick: move |_| {
-                        let name = new_name();
-                        async move {
-                            match create_my_device(iid, name).await {
-                                Ok(v) => {
-                                    new_name.set(String::new());
-                                    on_show.call((v.config, v.qr_svg, v.filename));
-                                    on_change.call(());
+                // Input + Generate: their own row, full-width on mobile.
+                div { class: "flex items-center gap-2 w-full sm:w-auto",
+                    input {
+                        class: "input flex-1 sm:w-40 text-sm",
+                        placeholder: t!("devices-new-name-placeholder"),
+                        value: "{new_name}",
+                        oninput: move |e| new_name.set(e.value()),
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: at_limit || new_name().trim().is_empty(),
+                        onclick: move |_| {
+                            let name = new_name();
+                            async move {
+                                match create_my_device(iid, name).await {
+                                    Ok(v) => {
+                                        new_name.set(String::new());
+                                        on_show.call((v.config, v.qr_svg, v.filename));
+                                        on_change.call(());
+                                    }
+                                    Err(e) => on_error.call(e.to_string()),
                                 }
-                                Err(e) => on_error.call(e.to_string()),
                             }
-                        }
-                    },
-                    {t!("action-generate")}
+                        },
+                        {t!("action-generate")}
+                    }
                 }
             }
 
@@ -157,23 +160,25 @@ fn DeviceRow(
     let mut renaming = use_signal(|| false);
     let mut new_name = use_signal(|| name.clone());
     rsx! {
-        div { class: "flex items-center gap-3 border-t border-line-soft pt-2 first:border-0 first:pt-0",
+        div { class: "flex flex-col sm:flex-row sm:items-center gap-2 border-t border-line-soft pt-2 first:border-0 first:pt-0",
             div { class: "flex-1 min-w-0",
                 if renaming() {
                     input {
-                        class: "input text-sm w-48",
+                        class: "input text-sm w-full sm:w-48",
                         value: "{new_name}",
                         oninput: move |e| new_name.set(e.value()),
                     }
                 } else {
-                    div { class: "text-fg-strong text-sm", "{display_name}" }
+                    div { class: "text-fg-strong text-sm truncate", "{display_name}" }
                 }
                 if configured {
-                    div { class: "text-fg-muted text-xs font-mono", "{address}" }
+                    div { class: "text-fg-muted text-xs font-mono truncate", "{address}" }
                 } else {
                     div { class: "text-warn text-xs", {t!("device-unconfigured-note")} }
                 }
             }
+            // Action buttons wrap on mobile instead of overflowing.
+            div { class: "flex flex-wrap items-center gap-2 shrink-0",
             // Users may rename only their own user-created devices.
             if user_created {
                 if renaming() {
@@ -216,6 +221,7 @@ fn DeviceRow(
                     }
                 },
                 {t!("action-delete")}
+            }
             }
         }
     }
