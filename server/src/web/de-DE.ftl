@@ -114,7 +114,9 @@ users-loading-devices = Geräte werden geladen…
 ## ── Geräte / Schnittstellen (mehrere) ───────────────────────────
 devices-no-interfaces = Für dich sind noch keine Schnittstellen verfügbar.
 device-unconfigured-note = Nicht konfiguriert — Schlüssel generieren zum Aktivieren.
+device-stale-note = Schnittstellen-Einstellungen geändert — neu generieren, um diese Konfiguration zu aktualisieren.
 badge-unconfigured = nicht konfiguriert
+badge-stale = veraltet
 admin-generate-key = Schlüssel jetzt generieren
 devices-quota-unlimited = { $used } Geräte
 users-device-count-simple = { $count } Geräte

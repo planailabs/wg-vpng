@@ -114,6 +114,9 @@ pub struct InterfaceOutput {
     pub mikrotik_insecure: Option<bool>,
     /// Node control-API url (no key), when applicable.
     pub node_url: Option<String>,
+    /// Bumped when a config-affecting value changes; peers with a lower
+    /// `config_version` have a stale downloaded config.
+    pub config_version: i32,
 }
 
 fn iface_output(i: &store::Interface) -> InterfaceOutput {
@@ -140,6 +143,7 @@ fn iface_output(i: &store::Interface) -> InterfaceOutput {
         mikrotik_username: user,
         mikrotik_insecure: insecure,
         node_url: i.backend.node_display(),
+        config_version: i.config_version,
     }
 }
 

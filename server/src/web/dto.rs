@@ -22,6 +22,9 @@ pub struct PeerView {
     pub owner_email: Option<String>,
     /// False for an "unconfigured" device (no key yet — the user must generate).
     pub configured: bool,
+    /// The interface's config changed since this device's config was generated —
+    /// the downloaded config is out of date and should be regenerated.
+    pub config_stale: bool,
     /// Whether the end user created this device. Users may rename only their own
     /// user-created devices; admins may rename any.
     pub user_created: bool,

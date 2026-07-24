@@ -187,10 +187,16 @@ fn UserCard(
                                             if !d.configured {
                                                 Badge { variant: BadgeVariant::Warn, {t!("badge-unconfigured")} }
                                             }
+                                            if d.config_stale {
+                                                Badge { variant: BadgeVariant::Warn, {t!("badge-stale")} }
+                                            }
                                         }
                                         div { class: "text-fg-muted text-xs", "{d.interface_name}" }
                                         if d.configured {
                                             div { class: "text-fg-muted text-xs font-mono", "{d.address}" }
+                                            if d.config_stale {
+                                                div { class: "text-warn text-xs", {t!("device-stale-note")} }
+                                            }
                                         } else {
                                             div { class: "text-warn text-xs", {t!("device-unconfigured-note")} }
                                         }

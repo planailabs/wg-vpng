@@ -489,12 +489,13 @@ async fn peer_view(
     p: crate::store::Peer,
     owner_email: Option<String>,
 ) -> Result<PeerView, ServerFnError> {
-    let interface_name = sqlx::query_scalar::<_, String>("SELECT name FROM wg_interfaces WHERE id = $1")
-        .bind(p.interface_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(err)?
-        .unwrap_or_default();
+    let iface: Option<(String, i32)> =
+        sqlx::query_as("SELECT name, config_version FROM wg_interfaces WHERE id = $1")
+            .bind(p.interface_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(err)?;
+    let (interface_name, iface_version) = iface.unwrap_or_default();
     let configured = !p.public_key.is_empty();
     Ok(PeerView {
         id: p.id,
@@ -505,6 +506,7 @@ async fn peer_view(
         public_key: p.public_key,
         owner_email,
         configured,
+        config_stale: configured && p.config_version < iface_version,
         user_created: p.user_created,
     })
 }

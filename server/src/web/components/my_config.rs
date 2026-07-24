@@ -133,6 +133,7 @@ fn InterfaceSection(
                             name: peer.name.clone(),
                             address: peer.address.clone(),
                             configured: peer.configured,
+                            config_stale: peer.config_stale,
                             user_created: peer.user_created,
                             on_change: move |_| on_change.call(()),
                             on_show: move |c: (String, String, String)| on_show.call(c),
@@ -151,6 +152,7 @@ fn DeviceRow(
     name: String,
     address: String,
     configured: bool,
+    config_stale: bool,
     user_created: bool,
     on_change: EventHandler<()>,
     on_show: EventHandler<(String, String, String)>,
@@ -173,6 +175,9 @@ fn DeviceRow(
                 }
                 if configured {
                     div { class: "text-fg-muted text-xs font-mono truncate", "{address}" }
+                    if config_stale {
+                        div { class: "text-warn text-xs", {t!("device-stale-note")} }
+                    }
                 } else {
                     div { class: "text-warn text-xs", {t!("device-unconfigured-note")} }
                 }

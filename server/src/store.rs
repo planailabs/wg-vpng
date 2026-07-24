@@ -49,6 +49,9 @@ pub struct Interface {
     pub backend: BackendConfig,
     /// Last backend reconcile error (None = last sync ok).
     pub last_error: Option<String>,
+    /// Bumped whenever a value affecting the rendered client config changes
+    /// (endpoint/dns/allowed_ips/keepalive). Peers stamped below this are stale.
+    pub config_version: i32,
 }
 
 /// A reusable named set of access rules. A user is a member if their email
@@ -80,6 +83,9 @@ pub struct Peer {
     /// Whether the end user created this device (vs an admin). Users may rename
     /// only their own user-created devices.
     pub user_created: bool,
+    /// Interface `config_version` this peer's config was last generated against.
+    /// Trailing the interface's current version ⇒ the downloaded config is stale.
+    pub config_version: i32,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
@@ -93,9 +99,9 @@ pub struct User {
 }
 
 const IFACE_COLS: &str = "id, name, display_name, download_filename, listen_port, address, private_key, public_key, endpoint, \
-    dns, allowed_ips, keepalive, device_limit, group_ids, backend, last_error";
+    dns, allowed_ips, keepalive, device_limit, group_ids, backend, last_error, config_version";
 const GROUP_COLS: &str = "id, name, patterns, claim_values";
-const PEER_COLS: &str = "id, interface_id, user_id, name, public_key, preshared_key, address, user_created";
+const PEER_COLS: &str = "id, interface_id, user_id, name, public_key, preshared_key, address, user_created, config_version";
 const USER_COLS: &str = "id, email, name, is_admin, banned, access_revoked";
 
 /// Default IPv6 pools appended when an interface lacks IPv6 (IPv6 is
@@ -401,14 +407,14 @@ pub async fn update_interface(
         Some(v) => v.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
         None => cur.download_filename,
     };
-    let new_endpoint = endpoint.map(str::to_string).unwrap_or(cur.endpoint);
+    let new_endpoint = endpoint.map(str::to_string).unwrap_or_else(|| cur.endpoint.clone());
     let new_dns = match dns {
         Some(d) => d.map(str::to_string),
-        None => cur.dns,
+        None => cur.dns.clone(),
     };
     let new_allowed = allowed_ips
         .map(|a| wg::ensure_ipv6(a, DEFAULT_V6_NET))
-        .unwrap_or(cur.allowed_ips);
+        .unwrap_or_else(|| cur.allowed_ips.clone());
     let new_keepalive = keepalive.unwrap_or(cur.keepalive);
     let new_limit = match device_limit {
         Some(v) => v,
@@ -439,9 +445,18 @@ pub async fn update_interface(
         None => cur.backend,
     };
 
+    // Bump the config version iff a value that lands in the rendered client
+    // config changed. Presentation/policy fields (display name, download name,
+    // device limit, groups, backend) don't affect an already-downloaded config.
+    let config_changed = new_endpoint != cur.endpoint
+        || new_dns != cur.dns
+        || new_allowed != cur.allowed_ips
+        || new_keepalive != cur.keepalive;
+    let new_version = cur.config_version + i32::from(config_changed);
+
     let iface = sqlx::query_as::<_, Interface>(&format!(
         "UPDATE wg_interfaces SET display_name=$2, download_filename=$3, endpoint=$4, dns=$5, allowed_ips=$6, keepalive=$7, \
-         device_limit=$8, group_ids=$9, backend=$10 WHERE id=$1 RETURNING {IFACE_COLS}"
+         device_limit=$8, group_ids=$9, backend=$10, config_version=$11 WHERE id=$1 RETURNING {IFACE_COLS}"
     ))
     .bind(id)
     .bind(&new_display)
@@ -453,6 +468,7 @@ pub async fn update_interface(
     .bind(new_limit)
     .bind(sqlx::types::Json(&new_groups))
     .bind(sqlx::types::Json(new_backend))
+    .bind(new_version)
     .fetch_one(pool)
     .await
     .context("update interface")?;
@@ -601,8 +617,8 @@ pub async fn create_peer_unconfigured(
         }
     };
     sqlx::query_as::<_, Peer>(&format!(
-        "INSERT INTO wg_peers (interface_id, user_id, name, public_key, preshared_key, address, user_created) \
-         VALUES ($1,$2,$3,'',NULL,$4,false) RETURNING {PEER_COLS}"
+        "INSERT INTO wg_peers (interface_id, user_id, name, public_key, preshared_key, address, user_created, config_version) \
+         VALUES ($1,$2,$3,'',NULL,$4,false,(SELECT config_version FROM wg_interfaces WHERE id=$1)) RETURNING {PEER_COLS}"
     ))
     .bind(interface_id)
     .bind(user_id)
@@ -627,8 +643,9 @@ async fn insert_peer(
     let psk = wg::generate_preshared_key();
     let peer = sqlx::query_as::<_, Peer>(&format!(
         "INSERT INTO wg_peers \
-         (interface_id, user_id, name, public_key, preshared_key, address, user_created) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING {PEER_COLS}"
+         (interface_id, user_id, name, public_key, preshared_key, address, user_created, config_version) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT config_version FROM wg_interfaces WHERE id=$1)) \
+         RETURNING {PEER_COLS}"
     ))
     .bind(interface_id)
     .bind(user_id)
@@ -648,8 +665,11 @@ async fn insert_peer(
 pub async fn regenerate_peer(pool: &PgPool, peer_id: Uuid) -> Result<(Peer, String)> {
     let kp = wg::generate_keypair();
     let psk = wg::generate_preshared_key();
+    // Regenerating produces a fresh config → stamp it with the interface's
+    // current version, clearing any stale marker.
     let peer = sqlx::query_as::<_, Peer>(&format!(
-        "UPDATE wg_peers SET public_key=$2, preshared_key=$3 \
+        "UPDATE wg_peers SET public_key=$2, preshared_key=$3, \
+         config_version=(SELECT config_version FROM wg_interfaces WHERE id = wg_peers.interface_id) \
          WHERE id=$1 RETURNING {PEER_COLS}"
     ))
     .bind(peer_id)
@@ -1252,6 +1272,35 @@ mod tests {
             assert!(stem.len() <= 15, "{stem} too long");
             assert!(!stem.starts_with('-') && !stem.ends_with('-'), "{stem} dangling dash");
         }
+    }
+
+    #[tokio::test]
+    async fn config_version_bumps_and_marks_peers_stale() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = sqlx::PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+        let iface = mk_iface(&pool, &["*".into()], "10.8.0.1/24").await;
+        assert_eq!(iface.config_version, 1);
+
+        // A peer is stamped with the interface's current version.
+        let (peer, _) = create_peer(&pool, iface.id, None, "laptop", true).await.unwrap();
+        assert_eq!(peer.config_version, 1);
+
+        // A non-config change (display name) does NOT bump the version.
+        let iface = update_interface(&pool, iface.id, Some("Renamed"),
+            None, None, None, None, None, None, None, None).await.unwrap();
+        assert_eq!(iface.config_version, 1);
+
+        // A config change (keepalive) bumps it -> the existing peer is now stale.
+        let iface = update_interface(&pool, iface.id, None, None, None, None, None,
+            Some(40), None, None, None).await.unwrap();
+        assert_eq!(iface.config_version, 2);
+        let peer = get_peer(&pool, peer.id).await.unwrap().unwrap();
+        assert!(peer.config_version < iface.config_version);
+
+        // Regenerating re-stamps the peer to the current version (no longer stale).
+        let (peer, _) = regenerate_peer(&pool, peer.id).await.unwrap();
+        assert_eq!(peer.config_version, iface.config_version);
     }
 
     #[tokio::test]
