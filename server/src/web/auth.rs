@@ -85,7 +85,7 @@ impl UserResolver for PgUserResolver {
         .fetch_all(&self.pool)
         .await?
         .into_iter()
-        .map(|(org_id, role)| OrgMembership { org_id, role })
+        .map(|(org_id, role)| OrgMembership::new(org_id, role))
         .collect();
 
         Ok(WebUser { id, email, name, is_admin, org_memberships, impersonating_from: None })
@@ -130,7 +130,7 @@ impl UserResolver for PgUserResolver {
         .fetch_all(&self.pool)
         .await?
         .into_iter()
-        .map(|(org_id, role)| OrgMembership { org_id, role })
+        .map(|(org_id, role)| OrgMembership::new(org_id, role))
         .collect();
 
         Ok(Some(WebUser { id, email, name, is_admin, org_memberships, impersonating_from: None }))

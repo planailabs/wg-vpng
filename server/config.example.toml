@@ -40,3 +40,15 @@ allowed_domains = ["example.com"]
 # Optional: days a login keeps the account "live" before it deactivates for
 # inactivity (default 30; omit or 0 to never deactivate).
 # liveliness_days = 30
+
+# plan.ai accounts (Zitadel, GitHub as its social login). Redirect URI:
+# {external_url}/auth/zitadel/callback, registered on the app's OIDC client in
+# the plan.ai org.
+# [[auth.providers]]
+# slug = "zitadel"
+# name = "plan.ai"
+# issuer = "https://id.plan.ai"
+# client_id = "xxx"
+# client_secret = "xxx"
+# allow_all = true
+# zitadel_org = "397597061693833352"   # only plan.ai org accounts sign in
