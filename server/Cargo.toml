@@ -79,7 +79,7 @@ sha2 = { version = "0.10", optional = true }
 aes-gcm = { version = "0.10", optional = true }
 qrcode = { version = "0.14", default-features = false, features = ["svg"], optional = true }
 plan-ai-html = { path = "../common/plan-ai-html", optional = true }
-plan-ai-api-mcp = { path = "../common/plan-ai-api-mcp", optional = true }
+plan-ai-api-mcp = { path = "../common/plan-ai-api-mcp", optional = true, features = ["zitadel"] }
 wg-backend = { path = "../wg-backend", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

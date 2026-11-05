@@ -36,6 +36,41 @@ async fn resolve_interface(pool: &PgPool, id: Option<Uuid>) -> Result<store::Int
     }
 }
 
+use super::auth::acting_user;
+
+/// An interface the principal may use: any for admins and API tokens, the
+/// group-granted ones for a signed-in user (as `list_my_interfaces`).
+async fn usable_interface(pool: &PgPool, p: &Principal, id: Option<Uuid>) -> Result<store::Interface, ApiError> {
+    let Some((uid, email)) = acting_user(p) else {
+        return resolve_interface(pool, id).await;
+    };
+    let mut mine = store::interfaces_for_user(pool, uid, &email).await.map_err(internal)?;
+    match id {
+        Some(id) => mine
+            .into_iter()
+            .find(|i| i.id == id)
+            .ok_or_else(|| ApiError::not_found("interface not found")),
+        None => match mine.len() {
+            1 => Ok(mine.remove(0)),
+            0 => Err(ApiError::not_found("you have access to no interface")),
+            _ => Err(ApiError::bad_request("multiple interfaces; specify interface_id")),
+        },
+    }
+}
+
+/// A peer the principal may touch: any for admins and API tokens, their own
+/// for a signed-in user (as the web's `authorize_peer`).
+async fn own_peer(pool: &PgPool, p: &Principal, id: Uuid) -> Result<store::Peer, ApiError> {
+    let peer = store::get_peer(pool, id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| ApiError::not_found("peer not found"))?;
+    match acting_user(p) {
+        Some((uid, _)) if peer.user_id != Some(uid) => Err(ApiError::not_found("peer not found")),
+        _ => Ok(peer),
+    }
+}
+
 async fn sync(pool: &PgPool, interface_id: Uuid) -> Result<(), ApiError> {
     store::sync_interface(pool, interface_id).await.map_err(internal)
 }
@@ -154,11 +189,14 @@ pub struct InterfaceListInput {}
 
 pub async fn interface_list(
     pool: PgPool,
-    _p: std::sync::Arc<Principal>,
+    p: std::sync::Arc<Principal>,
     _i: InterfaceListInput,
 ) -> Result<Vec<InterfaceOutput>, ApiError> {
-    Ok(store::list_interfaces(&pool)
-        .await
+    let ifaces = match acting_user(&p) {
+        Some((uid, email)) => store::interfaces_for_user(&pool, uid, &email).await,
+        None => store::list_interfaces(&pool).await,
+    };
+    Ok(ifaces
         .map_err(internal)?
         .iter()
         .map(iface_output)
@@ -173,10 +211,10 @@ pub struct InterfaceGetInput {
 
 pub async fn interface_get(
     pool: PgPool,
-    _p: std::sync::Arc<Principal>,
+    p: std::sync::Arc<Principal>,
     i: InterfaceGetInput,
 ) -> Result<InterfaceOutput, ApiError> {
-    Ok(iface_output(&resolve_interface(&pool, i.id).await?))
+    Ok(iface_output(&usable_interface(&pool, &p, i.id).await?))
 }
 
 fn default_listen_port() -> i32 {
@@ -331,14 +369,22 @@ pub struct StatusOutput {
 
 pub async fn interface_status(
     pool: PgPool,
-    _p: std::sync::Arc<Principal>,
+    p: std::sync::Arc<Principal>,
     i: InterfaceGetInput,
 ) -> Result<Vec<StatusOutput>, ApiError> {
-    let iface = resolve_interface(&pool, i.id).await?;
+    let iface = usable_interface(&pool, &p, i.id).await?;
+    // A user sees their own devices' status, not everyone's.
+    let mine: Option<Vec<String>> = match acting_user(&p) {
+        Some((uid, _)) => Some(
+            store::list_peers_for_user(&pool, uid).await.map_err(internal)?.into_iter().map(|p| p.public_key).collect(),
+        ),
+        None => None,
+    };
     Ok(store::interface_status(&pool, iface.id)
         .await
         .map_err(internal)?
         .into_iter()
+        .filter(|s| mine.as_ref().is_none_or(|m| m.contains(&s.public_key)))
         .map(|s| StatusOutput {
             public_key: s.public_key,
             endpoint: s.endpoint,
@@ -357,9 +403,14 @@ pub struct PeerListInput {
 
 pub async fn peer_list(
     pool: PgPool,
-    _p: std::sync::Arc<Principal>,
+    p: std::sync::Arc<Principal>,
     i: PeerListInput,
 ) -> Result<Vec<store::Peer>, ApiError> {
+    if let Some((uid, _)) = acting_user(&p) {
+        // A user's own devices, on every interface unless one is named.
+        let mine = store::list_peers_for_user(&pool, uid).await.map_err(internal)?;
+        return Ok(mine.into_iter().filter(|p| i.interface_id.is_none_or(|id| p.interface_id == id)).collect());
+    }
     let iface = resolve_interface(&pool, i.interface_id).await?;
     store::list_peers(&pool, iface.id).await.map_err(internal)
 }
@@ -371,13 +422,10 @@ pub struct PeerGetInput {
 
 pub async fn peer_get(
     pool: PgPool,
-    _p: std::sync::Arc<Principal>,
+    p: std::sync::Arc<Principal>,
     i: PeerGetInput,
 ) -> Result<store::Peer, ApiError> {
-    store::get_peer(&pool, i.id)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| ApiError::not_found("peer not found"))
+    own_peer(&pool, &p, i.id).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -439,6 +487,9 @@ pub async fn peer_create(
     p: std::sync::Arc<Principal>,
     i: PeerCreateInput,
 ) -> Result<CreatedPeer, ApiError> {
+    if let Some((uid, email)) = acting_user(&p) {
+        return create_my_device(&pool, uid, &email, i).await;
+    }
     p.require_admin()?;
     let iface = resolve_interface(&pool, i.interface_id).await?;
     let user_id = match &i.user_email {
@@ -474,6 +525,41 @@ pub async fn peer_create(
     Ok(created_peer(&peer, private_key, &iface))
 }
 
+/// A user's own device, under the web's rules (`create_my_device`): a name, an
+/// interface they may use, its device limit, a generated key, an allocated address.
+async fn create_my_device(pool: &PgPool, uid: Uuid, email: &str, i: PeerCreateInput) -> Result<CreatedPeer, ApiError> {
+    if i.user_email.as_deref().is_some_and(|e| e != email) || i.address.as_deref().is_some_and(|a| !a.is_empty()) || !i.generate_key {
+        return Err(ApiError::forbidden(
+            "only an admin creates devices for others, with a fixed address, or without a key",
+        ));
+    }
+    let name = i.name.as_deref().map(str::trim).unwrap_or_default();
+    if name.is_empty() {
+        return Err(ApiError::bad_request("a device name is required"));
+    }
+    let iface = usable_interface(pool, &user_marker(uid, email), i.interface_id).await?;
+    if let Some(limit) = iface.device_limit {
+        let used = store::count_user_devices_on_interface(pool, iface.id, uid).await.map_err(internal)?;
+        if used >= limit as i64 {
+            return Err(ApiError::forbidden(format!("device limit reached ({limit})")));
+        }
+    }
+    let (peer, private_key) = store::create_peer(pool, iface.id, Some(uid), name, true).await.map_err(internal)?;
+    sync(pool, iface.id).await?;
+    Ok(created_peer(&peer, private_key, &iface))
+}
+
+/// The principal [`acting_user`] reads back, for helpers that take one.
+fn user_marker(uid: Uuid, email: &str) -> Principal {
+    Principal {
+        admin: false,
+        read_orgs: plan_ai_api_mcp::OrgSet::Only(Default::default()),
+        write_orgs: plan_ai_api_mcp::OrgSet::Only(Default::default()),
+        scopes: serde_json::json!({ "user_id": uid, "email": email }),
+        subject: email.to_string(),
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PeerUpdateInput {
     pub id: Uuid,
@@ -485,8 +571,14 @@ pub async fn peer_update(
     p: std::sync::Arc<Principal>,
     i: PeerUpdateInput,
 ) -> Result<store::Peer, ApiError> {
-    p.require_admin()?;
-    store::rename_peer(&pool, i.id, &i.name).await.map_err(internal)
+    let peer = own_peer(&pool, &p, i.id).await?;
+    if acting_user(&p).is_some() && !peer.user_created {
+        return Err(ApiError::forbidden("this device was provisioned by an admin and can't be renamed by its user"));
+    }
+    if acting_user(&p).is_none() {
+        p.require_admin()?;
+    }
+    store::rename_peer(&pool, i.id, i.name.trim()).await.map_err(internal)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -504,11 +596,10 @@ pub async fn peer_delete(
     p: std::sync::Arc<Principal>,
     i: PeerDeleteInput,
 ) -> Result<DeleteOutput, ApiError> {
-    p.require_admin()?;
-    let peer = store::get_peer(&pool, i.id)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| ApiError::not_found("peer not found"))?;
+    let peer = own_peer(&pool, &p, i.id).await?;
+    if acting_user(&p).is_none() {
+        p.require_admin()?;
+    }
     store::delete_peer(&pool, i.id).await.map_err(internal)?;
     sync(&pool, peer.interface_id).await?;
     Ok(DeleteOutput { deleted: true })
@@ -524,7 +615,10 @@ pub async fn peer_regenerate(
     p: std::sync::Arc<Principal>,
     i: PeerRegenerateInput,
 ) -> Result<CreatedPeer, ApiError> {
-    p.require_admin()?;
+    own_peer(&pool, &p, i.id).await?;
+    if acting_user(&p).is_none() {
+        p.require_admin()?;
+    }
     let (peer, private_key) = store::regenerate_peer(&pool, i.id).await.map_err(internal)?;
     sync(&pool, peer.interface_id).await?;
     let iface = store::get_interface(&pool, peer.interface_id)
@@ -546,13 +640,10 @@ pub struct ConfigOutput {
 
 pub async fn peer_config(
     pool: PgPool,
-    _p: std::sync::Arc<Principal>,
+    p: std::sync::Arc<Principal>,
     i: PeerConfigInput,
 ) -> Result<ConfigOutput, ApiError> {
-    let peer = store::get_peer(&pool, i.id)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| ApiError::not_found("peer not found"))?;
+    let peer = own_peer(&pool, &p, i.id).await?;
     let iface = store::get_interface(&pool, peer.interface_id)
         .await
         .map_err(internal)?
@@ -809,4 +900,76 @@ pub async fn interface_resync(
     sync(&pool, iface.id).await?;
     let iface = resolve_interface(&pool, Some(iface.id)).await?;
     Ok(iface_output(&iface))
+}
+
+#[cfg(test)]
+mod user_scope_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    async fn user(pool: &PgPool, email: &str) -> (Uuid, Arc<Principal>) {
+        let u = store::get_user(pool, store::upsert_user_by_email(pool, email).await.unwrap()).await.unwrap().unwrap();
+        (u.id, Arc::new(super::super::auth::user_principal(&u, None)))
+    }
+
+    /// A wg-vpng-node that accepts every apply, so syncing touches no kernel.
+    async fn stub_node() -> String {
+        let app = axum::Router::new().route("/v1/apply", axum::routing::post(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_signed_in_user_handles_only_their_own_devices() {
+        let db = pgtemp::PgTempDB::async_new().await;
+        let pool = PgPool::connect(&db.connection_uri()).await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+        let g = store::create_group(&pool, "staff", &["*@plan.ai".into()], &[]).await.unwrap();
+        let iface = store::create_interface(
+            &pool, "wg0", "", None, 51820, "10.8.0.1/24", "vpn:51820", None, "10.8.0.0/24", 25, Some(1), &[g.id],
+            crate::backend::BackendConfig::Node { url: stub_node().await, key: String::new() },
+        )
+        .await
+        .unwrap();
+
+        let (_, alice) = user(&pool, "alice@plan.ai").await;
+        let (_, bob) = user(&pool, "bob@plan.ai").await;
+        let (_, eve) = user(&pool, "eve@elsewhere.com").await;
+        let create = |name: &str| PeerCreateInput {
+            interface_id: None,
+            user_email: None,
+            name: Some(name.into()),
+            address: None,
+            generate_key: true,
+        };
+
+        let laptop = peer_create(pool.clone(), alice.clone(), create("laptop")).await.unwrap();
+        assert!(!laptop.private_key.is_empty());
+        // The interface's limit of one device per user, as in the web UI.
+        assert!(peer_create(pool.clone(), alice.clone(), create("phone")).await.is_err());
+        // Someone the interface's groups don't admit gets no interface at all.
+        assert!(interface_list(pool.clone(), eve.clone(), InterfaceListInput {}).await.unwrap().is_empty());
+        assert!(peer_create(pool.clone(), eve.clone(), create("x")).await.is_err());
+        // Nor may a user create for somebody else.
+        let mut for_bob = create("b");
+        for_bob.user_email = Some("bob@plan.ai".into());
+        assert!(peer_create(pool.clone(), alice.clone(), for_bob).await.is_err());
+
+        // Bob sees none of Alice's devices and cannot touch them.
+        assert!(peer_list(pool.clone(), bob.clone(), PeerListInput { interface_id: None }).await.unwrap().is_empty());
+        assert!(peer_get(pool.clone(), bob.clone(), PeerGetInput { id: laptop.id }).await.is_err());
+        assert!(peer_config(pool.clone(), bob.clone(), PeerConfigInput { id: laptop.id }).await.is_err());
+        assert!(peer_delete(pool.clone(), bob.clone(), PeerDeleteInput { id: laptop.id }).await.is_err());
+        assert!(peer_regenerate(pool.clone(), bob.clone(), PeerRegenerateInput { id: laptop.id }).await.is_err());
+        // Interface administration stays the admins'.
+        assert!(interface_delete(pool.clone(), alice.clone(), InterfaceGetInput { id: Some(iface.id) }).await.is_err());
+
+        // Alice manages hers.
+        assert_eq!(peer_list(pool.clone(), alice.clone(), PeerListInput { interface_id: None }).await.unwrap().len(), 1);
+        peer_update(pool.clone(), alice.clone(), PeerUpdateInput { id: laptop.id, name: "work laptop".into() }).await.unwrap();
+        peer_regenerate(pool.clone(), alice.clone(), PeerRegenerateInput { id: laptop.id }).await.unwrap();
+        peer_delete(pool.clone(), alice.clone(), PeerDeleteInput { id: laptop.id }).await.unwrap();
+    }
 }

@@ -21,13 +21,14 @@ pub fn shared_registry(pool: PgPool) -> Arc<Registry<PgPool>> {
 fn build_registry(pool: PgPool) -> Registry<PgPool> {
     use endpoints::*;
 
-    let authn = Arc::new(auth::TokenAuthenticator::new(pool));
+    let authn = Arc::new(auth::BearerAuthenticator::new(pool, crate::config::config().zitadel_bearer.as_ref()));
     let mut reg = Registry::new(authn)
         .info("wg-vpng API", env!("CARGO_PKG_VERSION"))
         .instructions(
             "WireGuard VPN generator API. Authenticate with a Bearer token \
-             (kind='admin' for mutations). Tools are <entity>_<action>, e.g. \
-             peer_create, peer_regenerate, peer_config.",
+             (kind='admin' for everything) or a signed-in user's Zitadel token \
+             (their own devices on the interfaces they may use). Tools are \
+             <entity>_<action>, e.g. peer_create, peer_regenerate, peer_config.",
         );
 
     {

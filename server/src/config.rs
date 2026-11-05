@@ -16,6 +16,46 @@ pub struct ServerConfig {
     pub auth: Option<plan_ai_auth::AuthConfig>,
     /// App secrets (encryption key for stored credentials).
     pub secrets: Option<SecretsConfig>,
+    /// Accept signed-in users' Zitadel access tokens on the API / MCP.
+    pub zitadel_bearer: Option<ZitadelBearerConfig>,
+}
+
+/// `[zitadel_bearer]` — a plan.ai user's own Zitadel access token (e.g. the
+/// chat acting as them by token exchange) as an API bearer. Zitadel tokens are
+/// opaque: each is checked at `{issuer}/oauth/v2/introspect` (cached a
+/// minute), must carry `project_id` in its audience, and acts as the wg-vpng
+/// user with its email — exactly what that user may do in the web UI.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZitadelBearerConfig {
+    /// e.g. `https://id.plan.ai`.
+    pub issuer: String,
+    /// The Zitadel project the token must be meant for.
+    pub project_id: String,
+    /// Client id + secret of that project's API application (introspection).
+    pub client_id: String,
+    pub client_secret: String,
+    /// Create the user of a token with a verified email that has none yet, as
+    /// a first web sign-in would (the `[[auth.providers]]` entry with this
+    /// issuer decides who may). `false` → unknown users get 403.
+    #[serde(default = "yes")]
+    pub auto_create: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl std::fmt::Debug for ZitadelBearerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZitadelBearerConfig")
+            .field("issuer", &self.issuer)
+            .field("project_id", &self.project_id)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .field("auto_create", &self.auto_create)
+            .finish()
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]

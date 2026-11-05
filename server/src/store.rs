@@ -723,6 +723,13 @@ pub struct UserWithCount {
     pub deactivated: bool,
 }
 
+pub async fn get_user_by_email(pool: &PgPool, email: &str) -> Result<Option<User>> {
+    Ok(sqlx::query_as::<_, User>(&format!("SELECT {USER_COLS} FROM users WHERE email = $1"))
+        .bind(email)
+        .fetch_optional(pool)
+        .await?)
+}
+
 pub async fn get_user(pool: &PgPool, id: Uuid) -> Result<Option<User>> {
     Ok(sqlx::query_as::<_, User>(&format!("SELECT {USER_COLS} FROM users WHERE id = $1"))
         .bind(id)

@@ -45,7 +45,9 @@ is applied through a pluggable backend.
 - **Dioxus fullstack** UI using the shared `plan-ai-design` system; error and
   login pages rendered with `plan-ai-html`.
 - **REST + MCP API** via [`plan-ai-api-mcp`] at `/api/v1/*` and `/mcp`
-  (OpenAPI + Swagger UI at `/api/v1/docs`), Bearer-token authenticated.
+  (OpenAPI + Swagger UI at `/api/v1/docs`), Bearer-token authenticated —
+  with an admin-minted token, or (`[zitadel_bearer]`) a signed-in user's own
+  Zitadel token, which reaches only that user's devices.
 
 ## Layout
 

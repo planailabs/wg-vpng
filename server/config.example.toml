@@ -52,3 +52,15 @@ allowed_domains = ["example.com"]
 # client_secret = "xxx"
 # allow_all = true
 # zitadel_org = "397597061693833352"   # only plan.ai org accounts sign in
+
+# Optional: signed-in users' own Zitadel access tokens as API/MCP bearers (the
+# plan.ai chat acting as them). Each is introspected at Zitadel, must be meant
+# for `project_id`, and acts as the user with its email: admins as admins,
+# everyone else on their own devices only. A verified email with no account
+# yet gets one, as a first web sign-in through the [[auth.providers]] entry
+# with this issuer would (`auto_create = false` to refuse instead).
+# [zitadel_bearer]
+# issuer = "https://id.plan.ai"
+# project_id = "xxx"
+# client_id = "xxx"       # the project's API application (introspection)
+# client_secret = "xxx"
