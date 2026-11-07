@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Warm the xzar.plan.ai binary cache with wg-vpng's heavy nix outputs (devshell,
-# server package, OCI image, CI image) so later CI jobs — and deployments —
+# server and node packages, OCI image, CI image) so later CI jobs — and deployments —
 # substitute instead of rebuilding. No-op when XZAR_TOKEN is absent (e.g. on
 # unprotected pipelines). Run via: nix develop -c bash xzar.sh
 set -euo pipefail
@@ -34,5 +34,7 @@ upload "wg-vpng/devshell" result-devshell
 rm -f result-devshell
 
 build_and_upload "wg-vpng-server" "wg-vpng/server"
+# The node's VM check builds it too.
+build_and_upload "wg-vpng-node"   "wg-vpng/node"
 build_and_upload "docker"         "wg-vpng/docker"
 build_and_upload "image"          "wg-vpng/image"
