@@ -46,7 +46,7 @@ flake-check:
   tags:
     - nix-image
   script:
-    - nix flake check -L --max-jobs 1
+    - nix flake check -L --max-jobs 1 --cores 4
   timeout: 2h
 
 # Build + push the OCI image to the GitLab registry (trunk only).
